@@ -1,0 +1,47 @@
+
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata] 
+allow-direct-references = true
+
+[project]
+name = "warpx-helpers"
+version = "0.0.1"
+authors = [
+  { name="Marcus Pearlman", email="marcuspearlman@boisestate.edu" },
+]
+description = "A package containing warpx helper methods"
+readme = "README.rst"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+dependencies = [
+  "trimesh",           # for geoViz
+  "shapely",            # for geoViz
+  "mapbox-earcut",      # for geoViz
+  "scikit-image",      # for geoViz
+  "numpy",             # data manipulation
+  "pandas",            # data manipulation
+  "matplotlib",        # for plotting
+]
+
+[project.optional-dependencies]
+
+warpx = ["warpx"]  # this is required but the user may install from source.
+
+
+
+
+[project.scripts]
+
+
+[project.urls]
+Homepage = "https://github.com/pearlmam/warpx-helpers/"
+Issues = "https://github.com/pearlmam/warpx-helpers/issues"
