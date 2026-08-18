@@ -2,7 +2,7 @@
 
 from pywarpx import libwarpx
 from pywarpx.LoadThirdParty import load_cupy
-from helpers import get_grid_cell_sizes
+from warpx_helpers.methods import get_grid_cell_sizes
 
 INVALID_ID = 16777216 # 2**24, validity bit in the idcpu (particle cpu id), signals a kill to the particles
 neutral_accumulator = {}

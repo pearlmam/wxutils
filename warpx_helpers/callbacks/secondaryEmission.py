@@ -3,9 +3,7 @@
 from pywarpx import particle_containers, picmi
 from pywarpx.LoadThirdParty import load_cupy
 
-import sys
-sys.path.append('/home/marcus/Documents/SimulationProjects/PPS-Intro/cbMethods')
-from helpers import energy_to_velocity
+from warpx_helpers.methods import energy_to_velocity
 
 constants = picmi.constants
 
