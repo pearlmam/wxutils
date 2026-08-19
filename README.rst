@@ -1,6 +1,6 @@
 
-WarpX-Helpers
-=============
+WarpX Utilities (wxutils)
+=========================
 
 A collection of python functions to aid in model development. This contains callback methods, grid and geometry managment methods, and more....
 
@@ -19,8 +19,8 @@ Ensure warpx is installed to an environment::
 
 Clone the package::
      
-     git clone git@github.com:pearlmam/warpx-helpers.git
-     cd warpx-helpers
+     git clone git@github.com:pearlmam/wxutils.git
+     cd wxutils
      
 Install using an editable install::
      

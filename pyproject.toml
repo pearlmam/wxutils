@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [project]
-name = "warpx-helpers"
+name = "wxutils"
 version = "0.0.1"
 authors = [
   { name="Marcus Pearlman", email="marcuspearlman@boisestate.edu" },
