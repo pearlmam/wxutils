@@ -1,26 +1,16 @@
 # -*- coding: utf-8 -*-
+import copy
+import os
+from mpi4py import MPI as mpi
+import time
 
-from pywarpx import particle_containers, picmi
+import numpy as np
+from pywarpx import particle_containers, picmi,callbacks,libwarpx
 from pywarpx.LoadThirdParty import load_cupy
 
 from warpx_helpers.methods import energy_to_velocity
 
 constants = picmi.constants
-
-sigma0 = 2.0
-Emax0 = 300
-Eth = 5.0
-k1=0.62
-k2=0.25 
-engSecAvg = 5.0
-uSecMag = energy_to_velocity(engSecAvg)
-def concat(list_of_arrays):
-    xp, _ = load_cupy()
-    if len(list_of_arrays) == 0:
-        # Return a 1d array of size 0
-        return xp.empty(0)
-    else:
-        return xp.concatenate(list_of_arrays)
 
 class RunningMean:
     def __init__(self):
@@ -33,104 +23,185 @@ class RunningMean:
             self.mean += (value - self.mean) / self.count
         return self.mean
 
+
+availiable_species = {
+    'electron':{'mass':constants.m_e,"charge":-constants.q_e}
+    }
+
+def set_species_params(species):
+    if species.particle_type is None:
+        pass
+    elif species.particle_type in availiable_species:
+        species.mass = availiable_species[species.particle_type]["mass"]
+        species.charge = availiable_species[species.particle_type]["charge"]
+        species.particle_type = None  # this still generates warning...
+    else:
+        raise Exception("Particle type '%s' not supported for use in SecondaryEmission, define mass and charge manually.")
+    return species
+        
 running_angle = RunningMean()
-def print_angles(sim,species='electrons',boundary='eb'):
-    xp, _ = load_cupy()
-    buffer = particle_containers.ParticleBoundaryBufferWrapper()
-    lev = 0
-    # xTiles = buffer.get_particle_scraped_this_step(species, boundary, "x", lev)
-    # zTiles = buffer.get_particle_scraped_this_step(species, boundary, "z", lev)
-    nxTiles = buffer.get_particle_scraped_this_step(species, boundary, "nx", lev)
-    nzTiles = buffer.get_particle_scraped_this_step(species, boundary, "nz", lev)
-    
-    total_sum = 0.0
-    total_count = 0
-    for nxTile,nzTile in zip(nxTiles,nzTiles):
-        total_sum += float(xp.arctan2(nzTile, nxTile).sum())
-        total_count += len(nxTile)
-    angle = total_sum / total_count if total_count > 0 else 0.0
-    
-    # nxTiles = concat(nxTiles)
-    # nzTiles = concat(nzTiles)
-    # # nx = nxTiles.mean()
-    # # nz = nzTiles.mean()
-    # angle = xp.arctan2(nzTiles, nxTiles)
-    
-    angle = xp.rad2deg(angle)
-    print(angle)
-    
-    # running_angle.add(angle)
-    # print(running_angle.mean)
-    
-def gen_secondary(sim,species='electrons',boundary='eb',mask=None):
-    xp, _ = load_cupy()
-    electrons = sim.particles.get(species)
-    # pc = particle_containers.ParticleContainerWrapper(species)
-    mass = constants.m_e
-    dt = sim.time_step_size
-    
-    buffer = particle_containers.ParticleBoundaryBufferWrapper()
-    lev = 0
-    xTiles = buffer.get_particle_scraped_this_step(species, boundary, "x", lev)
-    zTiles = buffer.get_particle_scraped_this_step(species, boundary, "z", lev)
-    #yTiles = buffer.get_particle_scraped_this_step(species, boundary, "y", lev)
-    uxTiles = buffer.get_particle_scraped_this_step(species, boundary, "ux", lev)
-    uzTiles = buffer.get_particle_scraped_this_step(species, boundary, "uz", lev)
-    nxTiles = buffer.get_particle_scraped_this_step(species, boundary, "nx", lev)
-    nzTiles = buffer.get_particle_scraped_this_step(species, boundary, "nz", lev)
-    wTiles = buffer.get_particle_scraped_this_step(species, boundary, "w", lev)
-    dtTiles = buffer.get_particle_scraped_this_step(species, boundary, "deltaTimeScraped", lev)
-    
-
-    for xTile,zTile,uxTile,uzTile,nxTile,nzTile,wTile,dtTile in zip(xTiles,zTiles,uxTiles,uzTiles,nxTiles,nzTiles,wTiles,dtTiles):
-
-        Ivalid = mask(xTile, zTile) if mask is not None else True
+class SecondaryEmission:
+    def __init__(self,species0,sigmaMax,Emax,species1=None,Emin=5.0,Eemit=5.0,mask=None,boundary="eb",dumprate=None,wThresh=1e-5):
         
-        u_sq = (uxTile**2 + uzTile**2)
+        self.species0 = set_species_params(species0)
+        if species1 is None:
+            self.species1 = self.species0
+        else:
+            self.species1 = set_species_params(species1)
         
-        # relativistic
-        u_norm_sq = u_sq / (constants.c**2)  # Dimensionless (gamma^2 * beta^2)
-        gamma_minus_1 = u_norm_sq / (xp.sqrt(1.0 + u_norm_sq) + 1.0)
-        eng = gamma_minus_1 * mass * (constants.c**2) / constants.q_e
+        self.sigmaMax = sigmaMax
+        self.Emax = Emax
+        self.Emin = Emin
+        self.Eemit = Eemit
+        self.Uemit = energy_to_velocity(self.Eemit)
+        self.mask = mask
+        self.boundary = boundary
+        self.dumprate = dumprate
+        self.saveloc = "./diags/fields/"
+        self.wThresh = wThresh
+        self.rank = mpi.COMM_WORLD.Get_rank()
         
-        # non-reletivistic
-        # eng = 0.5 * mass * u_sq/constants.q_e
+    def initialize_setup(self,sim,layout):
+        callbacks.installafterstep(self.gen_secondary)
+        callbacks.installcallback("beforeEsolve",self.deposit_surface_charge)
+        self.sim = sim
+        self.surface_species0 = picmi.Species(name="surface_species0",
+                                        mass = self.species0.mass,
+                                        charge = self.species0.charge,
+                                        warpx_save_particles_at_eb=False,
+                                        )
+        self.surface_species1 = picmi.Species(name="surface_species1",
+                                        mass = self.species1.mass,
+                                        charge = -self.species1.charge,
+                                        warpx_save_particles_at_eb=False,
+                                        )
+        sim.add_species(
+            self.surface_species0,
+            layout=layout
+        )
+        
+        sim.add_species(
+            self.surface_species1,
+            layout=layout
+        )
     
-        nSec = sigma0*numerical(eng,Emax0,Eth)
-        I = (nSec>0.0) & Ivalid
-        wSec = wTile[I]*nSec[I]
-        uxSec = uSecMag * nxTile[I]
-        uzSec = uSecMag * nzTile[I]
-        tr = dt - dtTile[I]
+    
+    def initialize(self,sim,rhoField="rho_surface"):
+        self.xp, _ = load_cupy()
+        self.sim = sim
+        self.initialize_surface_rho(rhoField)
+        self.rho_surface = self.sim.fields.get("rho_surface",level=0)
+        self.rho = self.sim.fields.get("rho_fp",level=0)
+        self.species1_pc = self.sim.particles.get(self.species1.name)
+        self.surface_species0_pc = self.sim.particles.get(self.surface_species0.name)
+        self.surface_species1_pc = self.sim.particles.get(self.surface_species1.name)
         
-        electrons.add_particles(
-            x=xTile[I] + tr * uxSec,
-            z=zTile[I] + tr * uzSec,
+        if self.dumprate is not None:
+            os.makedirs(self.saveloc,exist_ok=True)
+        
+    def _gen_secondary(self,x,z,y,ux,uz,uy,nx,nz,ny,w,delta_t):
+        # species1_pc = self.sim.particles.get(self.species1.name)
+        eng = self.get_impact_energy(ux,uz)
+        nSec = self.sigmaMax*numerical(eng,self.Emax,self.Emin)
+        wSec = w*nSec
+        I = (wSec>self.wThresh)
+        wSec = wSec[I]
+        uxSec = self.Uemit * nx[I]
+        uzSec = self.Uemit * nz[I]
+        tr = self.sim.time_step_size - delta_t[I]
+        
+        self.species1_pc.add_particles(
+            x=x[I] + tr * uxSec,
+            z=z[I] + tr * uzSec,
+            #y=y[I],
             ux=uxSec,
             uz=uzSec,
             w=wSec,
+            unique_particles=True
         )  
+        
+        # Determine charge
+        self.surface_species0_pc.add_particles(x=x,z=z,w=w,)  
+        self.surface_species0_pc.deposit_charge(self.rho_surface,lev=0)
+        self.surface_species0_pc.clear_particles()
 
-def initialize_surface_rho(sim,name="rho_surface"):
-    rho = sim.fields.get('rho')
-    sim.fields.alloc_init(name=name,
-                        dir=0,
-                        level=0,
-                        ba=rho.box_array(),
-                        dm=rho.dm(),
-                        ncomp=rho.n_comp,
-                        ngrow=rho.n_grow_vect,
-                        initial_value=0.,
-                        redistribute=True,
-                        redistribute_on_remake=True,
-                        checkpoint_restart=False)
-    
-
-def deposit_surface_charge(sim,name="rho_surface"):
-    rho_surface = sim.fields.get(name)
+        self.surface_species1_pc.add_particles(x=x[I],z=z[I],w=wSec)
+        self.surface_species1_pc.deposit_charge(self.rho_surface,lev=0)
+        self.surface_species1_pc.clear_particles()
     
     
+    def gen_secondary(self):
+        buffer = particle_containers.ParticleBoundaryBufferWrapper()
+        name = self.species0.name
+        lev = 0
+        x = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "x", lev))
+        z = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "z", lev))
+        # y = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "y", lev))
+        ux = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "ux", lev))
+        uz = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "uz", lev))
+        nx = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "nx", lev))
+        nz = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "nz", lev))
+        w = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "w", lev))
+        delta_t = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "deltaTimeScraped", lev))
+    
+        I = self.mask(x, z) if self.mask is not None else True
+        self._gen_secondary(x[I], z[I], None, ux[I], uz[I], None, nx[I], nz[I], None, w[I], delta_t[I])
+    
+    def get_impact_energy(self,ux,uz,uy=None,relativistic=True):
+        u_sq = (ux**2 + uz**2)
+        mass = self.species0.mass
+        if relativistic == True:
+            u_norm_sq = u_sq / (constants.c**2)  # Dimensionless (gamma^2 * beta^2)
+            gamma_minus_1 = u_norm_sq / (self.xp.sqrt(1.0 + u_norm_sq) + 1.0)
+            eng = gamma_minus_1 * mass * (constants.c**2) / constants.q_e
+        else:
+            eng = 0.5 * mass * u_sq/constants.q_e
+        return eng
+    
+    
+    def initialize_surface_rho(self,name="rho_surface"):
+        rho = self.sim.fields.get('rho_fp',level=0)
+        self.sim.fields.alloc_init(name=name,
+                            level=0,
+                            ba=rho.box_array(),
+                            dm=rho.dm(),
+                            ncomp=rho.n_comp,
+                            ngrow=rho.n_grow_vect,
+                            initial_value=0.,
+                            redistribute=True,
+                            redistribute_on_remake=True,
+                            checkpoint_restart=False)
 
+    def deposit_surface_charge(self):
+        self.rho.saxpy(1.0, self.rho_surface, 0, 0, 1, 0)
+        #print('adding rho')
+        #self.save_field(self.rho,"rho_total")
+    
+    def save_field(self,field,savename):
+        if self.dumprate is not None:
+            i = self.sim.extension.warpx.getistep(0)
+            if i % self.dumprate == 0:
+                field_data = field[...]
+                if hasattr(field_data, "get"):
+                    field_data = field_data.get()
+                if libwarpx.amr.ParallelDescriptor.MyProc() == 0:
+                    np.save(f"{self.saveloc}/{savename}_{i}.npy", field_data)
+    
+    def concat(self, list_of_arrays):
+        if len(list_of_arrays) == 0:
+            # Return a 1d array of size 0
+            return self.xp.empty(0)
+        else:
+            return self.xp.concatenate(list_of_arrays)
+    
+    
+
+
+
+
+###### secondary emission models
+k1=0.62
+k2=0.25 
 def numerical(x,Emax0,Eth):
     # Detect backend dynamically (NumPy or CuPy)
     xp, _ = load_cupy()
