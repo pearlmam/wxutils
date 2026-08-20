@@ -30,6 +30,7 @@ dependencies = [
   "numpy",             # data manipulation
   "pandas",            # data manipulation
   "matplotlib",        # for plotting
+  "h5py",              # for data saving
 ]
 
 [project.optional-dependencies]
