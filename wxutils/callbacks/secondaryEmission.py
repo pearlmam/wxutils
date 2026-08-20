@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
-import copy
+# import copy
+# import time
+
 import os
 from mpi4py import MPI as mpi
-import time
+
 
 import numpy as np
 from pywarpx import particle_containers, picmi,callbacks,libwarpx
 from pywarpx.LoadThirdParty import load_cupy
 
-from warpx_helpers.methods import energy_to_velocity
-
+from wxutils.physics import energy_to_velocity
+from wxutils.callbacks.utils import set_species_params
 constants = picmi.constants
 
 class RunningMean:
@@ -22,28 +24,12 @@ class RunningMean:
             self.count += 1
             self.mean += (value - self.mean) / self.count
         return self.mean
-
-
-availiable_species = {
-    'electron':{'mass':constants.m_e,"charge":-constants.q_e}
-    }
-
-def set_species_params(species):
-    if species.particle_type is None:
-        pass
-    elif species.particle_type in availiable_species:
-        species.mass = availiable_species[species.particle_type]["mass"]
-        species.charge = availiable_species[species.particle_type]["charge"]
-        species.particle_type = None  # this still generates warning...
-    else:
-        raise Exception("Particle type '%s' not supported for use in SecondaryEmission, define mass and charge manually.")
-    return species
         
 running_angle = RunningMean()
 class SecondaryEmission:
     def __init__(self,species0,sigmaMax,Emax,species1=None,Emin=5.0,Eemit=5.0,mask=None,boundary="eb",dumprate=None,wThresh=1e-5):
         
-        self.species0 = set_species_params(species0)
+        self.species0 = set_species_params(species0,boundary)
         if species1 is None:
             self.species1 = self.species0
         else:
@@ -61,7 +47,8 @@ class SecondaryEmission:
         self.wThresh = wThresh
         self.rank = mpi.COMM_WORLD.Get_rank()
         
-    def initialize_setup(self,sim,layout):
+    def initialize_setup(self,sim):
+        
         callbacks.installafterstep(self.gen_secondary)
         callbacks.installcallback("beforeEsolve",self.deposit_surface_charge)
         self.sim = sim
@@ -75,6 +62,7 @@ class SecondaryEmission:
                                         charge = -self.species1.charge,
                                         warpx_save_particles_at_eb=False,
                                         )
+        layout = picmi.PseudoRandomLayout(n_macroparticles_per_cell=[1,1], grid=self.sim.solver.grid)
         sim.add_species(
             self.surface_species0,
             layout=layout
@@ -87,18 +75,20 @@ class SecondaryEmission:
     
     
     def initialize(self,sim,rhoField="rho_surface"):
-        self.xp, _ = load_cupy()
         self.sim = sim
+        self.xp, _ = load_cupy()
         self.initialize_surface_rho(rhoField)
         self.rho_surface = self.sim.fields.get("rho_surface",level=0)
         self.rho = self.sim.fields.get("rho_fp",level=0)
         self.species1_pc = self.sim.particles.get(self.species1.name)
         self.surface_species0_pc = self.sim.particles.get(self.surface_species0.name)
         self.surface_species1_pc = self.sim.particles.get(self.surface_species1.name)
+        self.buffer = particle_containers.ParticleBoundaryBufferWrapper()
         
         if self.dumprate is not None:
             os.makedirs(self.saveloc,exist_ok=True)
-        
+            
+
     def _gen_secondary(self,x,z,y,ux,uz,uy,nx,nz,ny,w,delta_t):
         # species1_pc = self.sim.particles.get(self.species1.name)
         eng = self.get_impact_energy(ux,uz)
@@ -131,18 +121,17 @@ class SecondaryEmission:
     
     
     def gen_secondary(self):
-        buffer = particle_containers.ParticleBoundaryBufferWrapper()
         name = self.species0.name
         lev = 0
-        x = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "x", lev))
-        z = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "z", lev))
-        # y = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "y", lev))
-        ux = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "ux", lev))
-        uz = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "uz", lev))
-        nx = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "nx", lev))
-        nz = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "nz", lev))
-        w = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "w", lev))
-        delta_t = self.concat(buffer.get_particle_scraped_this_step(name, self.boundary, "deltaTimeScraped", lev))
+        x = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "x", lev))
+        z = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "z", lev))
+        # y = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "y", lev))
+        ux = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "ux", lev))
+        uz = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "uz", lev))
+        nx = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "nx", lev))
+        nz = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "nz", lev))
+        w = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "w", lev))
+        delta_t = self.concat(self.buffer.get_particle_scraped_this_step(name, self.boundary, "deltaTimeScraped", lev))
     
         I = self.mask(x, z) if self.mask is not None else True
         self._gen_secondary(x[I], z[I], None, ux[I], uz[I], None, nx[I], nz[I], None, w[I], delta_t[I])
@@ -187,12 +176,12 @@ class SecondaryEmission:
                 if libwarpx.amr.ParallelDescriptor.MyProc() == 0:
                     np.save(f"{self.saveloc}/{savename}_{i}.npy", field_data)
     
-    def concat(self, list_of_arrays):
+    def concat(self, list_of_arrays,*args,**kwargs):
         if len(list_of_arrays) == 0:
             # Return a 1d array of size 0
             return self.xp.empty(0)
         else:
-            return self.xp.concatenate(list_of_arrays)
+            return self.xp.concatenate(list_of_arrays,*args,**kwargs)
     
     
 
