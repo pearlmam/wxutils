@@ -37,7 +37,7 @@ install hatchling::
      
 Install using an editable install::   
 
-     pip install --no-build-isolation -e .
+     pip install --no-deps --no-build-isolation -e .
      
 This last step uses pip, but its the only way to install an editable install?
 
