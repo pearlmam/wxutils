@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from pywarpx import picmi
-import np
+import numpy as np
 constants = picmi.constants
 
 
