@@ -47,7 +47,7 @@ class SecondaryEmission:
         self.wThresh = wThresh
         self.rank = mpi.COMM_WORLD.Get_rank()
         
-    def initialize_setup(self,sim):
+    def pre_initialize(self,sim):
         
         callbacks.installafterstep(self.gen_secondary)
         callbacks.installcallback("beforeEsolve",self.deposit_surface_charge)
@@ -74,7 +74,7 @@ class SecondaryEmission:
         )
     
     
-    def initialize(self,sim,rhoField="rho_surface"):
+    def post_initialize(self,sim,rhoField="rho_surface"):
         self.sim = sim
         self.xp, _ = load_cupy()
         self.initialize_surface_rho(rhoField)

@@ -32,7 +32,7 @@ class CurrentAbs():
         self.nsteps = nsteps
         
         
-    def initialize(self,sim):
+    def post_initialize(self,sim):
         self.xp,_ = load_cupy()
         self.sim = sim
         self.data = self.xp.array([])

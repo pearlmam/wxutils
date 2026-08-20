@@ -26,7 +26,7 @@ class InSituMPL():
             self.particles = particles
         
         
-    def initialize(self,sim):
+    def pre_initialize(self,sim):
         if mpi_enabled():
             # raise Warning("matplotlib plotting is disabled with mpi runs")
             print("Warning: matplotlib plotting is disabled with mpi runs" )
