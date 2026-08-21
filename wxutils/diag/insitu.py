@@ -10,7 +10,7 @@ from pywarpx import particle_containers, picmi,callbacks
 from wxutils.callbacks.utils import to_cpu_array
 from wxutils.utils import mpi_enabled
 #from warpx_helpers.geoViz import plot_impl,gen_impl_vtk
-#from wxutils.physics import energy_to_velocity
+from wxutils.utils import get_rank
 
 colors = 'brgk'
 
@@ -29,8 +29,10 @@ class InSituMPL():
     def pre_initialize(self,sim):
         if mpi_enabled():
             # raise Warning("matplotlib plotting is disabled with mpi runs")
-            print("Warning: matplotlib plotting is disabled with mpi runs" )
+            if get_rank() == 0:
+                print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
             return
+        
         self.sim = sim
         callbacks.installcallback('particleinjection', self.plot_particles)
         ### setup "in-situ" plotting
