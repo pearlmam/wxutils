@@ -47,11 +47,13 @@ class SecondaryEmission:
         self.wThresh = wThresh
         self.rank = mpi.COMM_WORLD.Get_rank()
         
-    def pre_initialize(self,sim):
-        
+    def pre_initialize(self,sim,rhoSurfFieldName="rho_surf"):
+        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
         callbacks.installafterstep(self.gen_secondary)
-        callbacks.installcallback("beforeEsolve",self.deposit_surface_charge)
+        callbacks.installcallback("afterdeposition",self.deposit_surface_charge)
+        
         self.sim = sim
+        self.rhoSurfFieldName = rhoSurfFieldName
         self.surface_species0 = picmi.Species(name="surface_species0",
                                         mass = self.species0.mass,
                                         charge = self.species0.charge,
@@ -74,11 +76,10 @@ class SecondaryEmission:
         )
     
     
-    def post_initialize(self,sim,rhoField="rho_surface"):
-        self.sim = sim
+    def post_initialize(self):
         self.xp, _ = load_cupy()
-        self.initialize_surface_rho(rhoField)
-        self.rho_surface = self.sim.fields.get("rho_surface",level=0)
+        self.initialize_surface_rho(self.rhoSurfFieldName)
+        self.rho_surf = self.sim.fields.get(self.rhoSurfFieldName,level=0)
         self.rho = self.sim.fields.get("rho_fp",level=0)
         self.species1_pc = self.sim.particles.get(self.species1.name)
         self.surface_species0_pc = self.sim.particles.get(self.surface_species0.name)
@@ -112,11 +113,11 @@ class SecondaryEmission:
         
         # Determine charge
         self.surface_species0_pc.add_particles(x=x,z=z,w=w,)  
-        self.surface_species0_pc.deposit_charge(self.rho_surface,lev=0)
+        self.surface_species0_pc.deposit_charge(self.rho_surf,lev=0)
         self.surface_species0_pc.clear_particles()
 
         self.surface_species1_pc.add_particles(x=x[I],z=z[I],w=wSec)
-        self.surface_species1_pc.deposit_charge(self.rho_surface,lev=0)
+        self.surface_species1_pc.deposit_charge(self.rho_surf,lev=0)
         self.surface_species1_pc.clear_particles()
     
     
@@ -135,7 +136,7 @@ class SecondaryEmission:
     
         I = self.mask(x, z) if self.mask is not None else True
         self._gen_secondary(x[I], z[I], None, ux[I], uz[I], None, nx[I], nz[I], None, w[I], delta_t[I])
-    
+        
     def get_impact_energy(self,ux,uz,uy=None,relativistic=True):
         u_sq = (ux**2 + uz**2)
         mass = self.species0.mass
@@ -148,7 +149,7 @@ class SecondaryEmission:
         return eng
     
     
-    def initialize_surface_rho(self,name="rho_surface"):
+    def initialize_surface_rho(self,name="rho_surf"):
         rho = self.sim.fields.get('rho_fp',level=0)
         self.sim.fields.alloc_init(name=name,
                             level=0,
@@ -162,8 +163,7 @@ class SecondaryEmission:
                             checkpoint_restart=False)
 
     def deposit_surface_charge(self):
-        self.rho.saxpy(1.0, self.rho_surface, 0, 0, 1, 0)
-        #print('adding rho')
+        self.rho.saxpy(1.0, self.rho_surf, 0, 0, 1, 0)
         #self.save_field(self.rho,"rho_total")
     
     def save_field(self,field,savename):

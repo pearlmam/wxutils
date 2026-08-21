@@ -31,14 +31,17 @@ class CurrentAbs():
         self.interval = interval
         self.nsteps = nsteps
         
-        
-    def post_initialize(self,sim):
-        self.xp,_ = load_cupy()
+    def pre_initialize(self,sim):
         self.sim = sim
+        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
+        callbacks.installafterstep(self.get)
+        
+    def post_initialize(self):
+        self.xp,_ = load_cupy()
         self.data = self.xp.array([])
         self.species_pc = [self.sim.particles.get(species.name) for species in self.speciesList]
         self.buffer = particle_containers.ParticleBoundaryBufferWrapper()
-        callbacks.installafterstep(self.get)
+
         if self.interval is None:
             # check for diagnostics and grab that value
             if len(self.sim.diagnostics)>0: 
