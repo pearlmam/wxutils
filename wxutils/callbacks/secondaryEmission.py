@@ -12,6 +12,8 @@ from pywarpx.LoadThirdParty import load_cupy
 
 from wxutils.physics import energy_to_velocity
 from wxutils.callbacks.utils import set_species_params
+from wxutils.debug import check_array
+from wxutils.utils import to_cpu
 constants = picmi.constants
 
 class RunningMean:
@@ -27,7 +29,7 @@ class RunningMean:
         
 running_angle = RunningMean()
 class SecondaryEmission:
-    def __init__(self,species0,sigmaMax,Emax,species1=None,Emin=5.0,Eemit=5.0,mask=None,boundary="eb",dumprate=None,wThresh=1e-5):
+    def __init__(self,species0,sigmaMax,Emax,species1=None,Emin=5.0,Eemit=5.0,mask=None,boundary="eb",dumprate=None,wThresh=1e-5,rhoSurf="rho_surf"):
         
         self.species0 = set_species_params(species0,boundary)
         if species1 is None:
@@ -43,17 +45,17 @@ class SecondaryEmission:
         self.mask = mask
         self.boundary = boundary
         self.dumprate = dumprate
+        self.rhoSurf = rhoSurf
         self.saveloc = "./diags/fields/"
         self.wThresh = wThresh
         self.rank = mpi.COMM_WORLD.Get_rank()
         
-    def pre_initialize(self,sim,rhoSurfFieldName="rho_surf"):
+    def pre_initialize(self,sim):
         callbacks.installcallback("beforeInitEsolve", self.post_initialize)
         callbacks.installafterstep(self.gen_secondary)
         callbacks.installcallback("afterdeposition",self.deposit_surface_charge)
         
         self.sim = sim
-        self.rhoSurfFieldName = rhoSurfFieldName
         self.surface_species0 = picmi.Species(name="surface_species0",
                                         mass = self.species0.mass,
                                         charge = self.species0.charge,
@@ -78,8 +80,8 @@ class SecondaryEmission:
     
     def post_initialize(self):
         self.xp, _ = load_cupy()
-        self.initialize_surface_rho(self.rhoSurfFieldName)
-        self.rho_surf = self.sim.fields.get(self.rhoSurfFieldName,level=0)
+        self.initialize_surface_rho(self.rhoSurf)
+        self.rho_surf = self.sim.fields.get(self.rhoSurf,level=0)
         self.rho = self.sim.fields.get("rho_fp",level=0)
         self.species1_pc = self.sim.particles.get(self.species1.name)
         self.surface_species0_pc = self.sim.particles.get(self.surface_species0.name)
@@ -96,27 +98,30 @@ class SecondaryEmission:
         nSec = self.sigmaMax*numerical(eng,self.Emax,self.Emin)
         wSec = w*nSec
         I = (wSec>self.wThresh)
-        wSec = wSec[I]
+        wSec = to_cpu(wSec[I])
         uxSec = self.Uemit * nx[I]
         uzSec = self.Uemit * nz[I]
         tr = self.sim.time_step_size - delta_t[I]
         
+        xSec = to_cpu(x[I] + tr * uxSec)
+        zSec = to_cpu(z[I] + tr * uzSec)
+        
         self.species1_pc.add_particles(
-            x=x[I] + tr * uxSec,
-            z=z[I] + tr * uzSec,
+            x=xSec,
+            z=zSec,
             #y=y[I],
-            ux=uxSec,
-            uz=uzSec,
+            ux=to_cpu(uxSec),
+            uz=to_cpu(uzSec),
             w=wSec,
             unique_particles=True
         )  
         
         # Determine charge
-        self.surface_species0_pc.add_particles(x=x,z=z,w=w,)  
+        self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w),)  
         self.surface_species0_pc.deposit_charge(self.rho_surf,lev=0)
         self.surface_species0_pc.clear_particles()
 
-        self.surface_species1_pc.add_particles(x=x[I],z=z[I],w=wSec)
+        self.surface_species1_pc.add_particles(x=xSec,z=zSec,w=wSec)
         self.surface_species1_pc.deposit_charge(self.rho_surf,lev=0)
         self.surface_species1_pc.clear_particles()
     
