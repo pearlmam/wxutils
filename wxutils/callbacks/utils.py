@@ -5,12 +5,6 @@ from pywarpx.LoadThirdParty import load_cupy
 from pywarpx import picmi
 constants = picmi.constants
 
-def to_cpu_array(arr):
-    if hasattr(arr, 'get'):
-        return arr.get()
-    return np.asarray(arr)
-
-
 def concat(list_of_arrays):
     xp,_ = load_cupy
     if len(list_of_arrays) == 0:

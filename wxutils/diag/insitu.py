@@ -7,7 +7,7 @@ import matplotlib as mpl
 from pywarpx.LoadThirdParty import load_cupy
 from pywarpx import particle_containers, picmi,callbacks
 
-from wxutils.callbacks.utils import to_cpu_array
+from wxutils.utils import to_cpu
 from wxutils.utils import mpi_enabled
 #from warpx_helpers.geoViz import plot_impl,gen_impl_vtk
 from wxutils.utils import get_rank
@@ -56,8 +56,8 @@ class InSituMPL():
             mpsum = 0.
             psum = 0.0
             for pti in p_pc.iterator(level=0):
-                x = to_cpu_array(pti['x'])
-                y = to_cpu_array(pti['z'])
+                x = to_cpu(pti['x'])
+                y = to_cpu(pti['z'])
                 self.ax.scatter(x, y,c=colors[(i)%len(colors)],s=1)
     
             charge = p_pc.sum_particle_charge(0)

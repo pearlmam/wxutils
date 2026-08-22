@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import shutil
+import numpy as np
 
 try:
     from mpi4py import MPI as mpi
@@ -19,6 +20,12 @@ def get_rank():
     else:
         comm = mpi.COMM_WORLD
         return comm.Get_rank()
+
+def to_cpu(arr):
+    """Converts a CuPy array to NumPy, or returns the NumPy array as-is."""
+    return arr.get() if hasattr(arr, 'get') else arr
+
+
         
 def delete_diagnostics():
     if mpi_enabled():
