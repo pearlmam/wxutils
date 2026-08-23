@@ -3,6 +3,7 @@
 # import time
 
 import os
+from pathlib import Path
 from mpi4py import MPI as mpi
 
 import numpy as np
@@ -15,11 +16,12 @@ from wxutils.callbacks.utils import set_species_params
 from wxutils.utils import to_cpu
 from wxutils.core import CallbackBase
 from wxutils.callbacks.deposit import Deposit
+from wxutils.diag.store import Diagnostic1D
 
 constants = picmi.constants
 
 
-
+saveloc = Path('./diags/hist')
 class SecondaryEmission(CallbackBase):
     def __init__(self,species0,sigmaMax,Emax,boundary="eb",**kw):
         self.boundary = boundary
@@ -35,6 +37,7 @@ class SecondaryEmission(CallbackBase):
         self.wThresh = kw.pop("wThresh",1e-5)
         self.backend = kw.pop("backend","cupy") # 'cupy' will fallback to numpy if on cpu
         self.deposit_sink = kw.pop("deposit_sink",None)
+        self.debug = kw.pop("debug",None)
         
         if self.species1 is None:
             self.species1 = self.species0
@@ -45,6 +48,7 @@ class SecondaryEmission(CallbackBase):
         self.saveloc = "./diags/fields/"
         self.rank = mpi.COMM_WORLD.Get_rank()
         self.lev = 0
+        
         
         
     def pre_initialize(self,sim):
@@ -66,10 +70,9 @@ class SecondaryEmission(CallbackBase):
         layout = picmi.PseudoRandomLayout(n_macroparticles_per_cell=[1,1], grid=self.sim.solver.grid)
         sim.add_species(self.surface_species0,layout=layout)
         sim.add_species(self.surface_species1,layout=layout)
-        # self.deposit = Deposit(sim=sim,
-        #                        species=[self.surface_species0,self.surface_species1],
-        #                        method='warpx')
-    
+        self.deposit = Deposit(sim=self.sim,rho=self.rhoSurfName,
+                               species=[self.surface_species0,self.surface_species1],
+                               method='warpx')
     
     def post_initialize(self):
         self.xp, _ = load_cupy()
@@ -83,7 +86,7 @@ class SecondaryEmission(CallbackBase):
         self.surface_species1_pc = self.sim.particles.get(self.surface_species1.name)
         self.buffer = particle_containers.ParticleBoundaryBufferWrapper()
         self.bufferVars = ["x","z","ux","uz","nx","nz","w","deltaTimeScraped"]
-        
+        self.setup_diagnostics()
         if self.dumprate is not None:
             os.makedirs(self.saveloc,exist_ok=True)
             
@@ -91,7 +94,7 @@ class SecondaryEmission(CallbackBase):
     def _gen_secondary(self,x,z,y,ux,uz,uy,nx,nz,ny,w,delta_t):
         eng = self.get_impact_energy(ux,uz)
         nSec = self.sigmaMax*self.sey(eng)
-        print(f"N Secondaries Avg: {nSec.mean()}")
+        
         wSec = w*nSec
         I = (wSec>self.wThresh)
         wSec = to_cpu(wSec[I])
@@ -113,22 +116,22 @@ class SecondaryEmission(CallbackBase):
         )  
         
         # Determine charge
-        self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w))  
-        self.surface_species0_pc.deposit_charge(self.rhoSurf,lev=self.lev)
-        self.surface_species1_pc.add_particles(x=xSec,z=zSec,w=wSec)
-        self.surface_species1_pc.deposit_charge(self.rhoSurf,lev=self.lev)
-        
-        charge0 = self.surface_species0_pc.sum_particle_charge(0)
-        charge1 = self.surface_species1_pc.sum_particle_charge(0)
-        sumCharge = charge0 + charge1
-        print(f"Charge deposited: {charge0} + {charge1} = {sumCharge}")
-        
-        self.surface_species1_pc.clear_particles()
-        self.surface_species0_pc.clear_particles()
-        
-        # self.deposit.deposit_charge()
+        # self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w))  
+        # self.surface_species0_pc.deposit_charge(self.rhoSurf,lev=self.lev)
         # self.surface_species0_pc.clear_particles()
+        # self.surface_species1_pc.add_particles(x=to_cpu(x[I]),z=to_cpu(z[I]),w=wSec)
+        # self.surface_species1_pc.deposit_charge(self.rhoSurf,lev=self.lev)
         # self.surface_species1_pc.clear_particles()
+        
+        self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w))  
+        self.surface_species1_pc.add_particles(x=to_cpu(x[I]),z=to_cpu(z[I]),w=wSec)
+        self.deposit.deposit_charge()
+        self.surface_species0_pc.clear_particles()
+        self.surface_species1_pc.clear_particles()
+        
+        if self.debug:
+            # self.avg_sey.log(nSec.sum(),self.sim.extension.warpx.gett_new(self.lev),count=nSec.size)
+            print(f"N Secondaries Avg: {nSec.mean()}")
     
     
     def get_buffer_data(self, species_name, boundary, variables, lev=0):
@@ -172,7 +175,11 @@ class SecondaryEmission(CallbackBase):
                     field_data = field_data.get()
                 if libwarpx.amr.ParallelDescriptor.MyProc() == 0:
                     np.save(f"{self.saveloc}/{savename}_{i}.npy", field_data)
-
+    
+    def setup_diagnostics(self):
+        if self.debug:
+            path = saveloc /Path("avgSEY")
+            self.avg_sey = Diagnostic1D(path,interval=self.dumprate,reduce_op="mean")
 
 ###### secondary emission models
 # NOTE: numba is slower than numpy at this point in the hop funnel
