@@ -26,7 +26,7 @@ boundaryEnable = {'x_lo':'save_particles_at_xlo',
                   'z_hi':'save_particles_at_zhi',
                   'eb':'save_particles_at_eb'
                  }
- 
+
 def set_species_params(species,boundary=None):
     if (species.particle_type is None):
         pass
