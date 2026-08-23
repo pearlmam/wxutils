@@ -3,6 +3,7 @@ import atexit
 from pathlib import Path
 import h5py
 import numpy as np
+from importlib.metadata import version
 from pywarpx.LoadThirdParty import load_cupy
 from wxutils.utils import mpi_enabled
 if mpi_enabled:
@@ -12,7 +13,7 @@ else:
 
 
 class Diagnostic1D:
-    def __init__(self, path,nsteps=None, interval=None, filetype="h5", datatype=None):
+    def __init__(self, path,nsteps=None, interval=None, filetype="h5", datatype=None,reduce_op=None):
         self.xp, _ = load_cupy()
 
         self.path = Path(path)
@@ -30,7 +31,7 @@ class Diagnostic1D:
         # Buffer sized only for flush interval
         self.buf_size = self.interval if self.interval else self.nsteps
         self.buf_step = 0
-        self.data = self.xp.zeros((self.buf_size, 2), dtype=self.xp.float64)
+        self.data = self.xp.zeros((2, self.buf_size), dtype=self.xp.float64)
         
         if mpi_enabled:
             self.comm = mpi.COMM_WORLD
@@ -55,11 +56,15 @@ class Diagnostic1D:
             return
 
         with h5py.File(str(self.path), "w") as h5f:
+            mesh_group = h5f.create_group("runInfo")
+            mesh_group.attrs["software"] = np.bytes_("wxutils")
+            mesh_group.attrs["version"] = np.bytes_(version("wxutils"))
+            
             mesh_group = h5f.create_group(self.timeGroupName)
             mesh_group.attrs["vsType"] = np.bytes_("mesh")
             mesh_group.attrs["vsKind"] = np.bytes_("rectilinear")
             mesh_group.attrs["vsAxis0"] = np.bytes_("time")
-            
+        
             # Create empty resizable time dataset
             mesh_group.create_dataset(
                 "time", 
@@ -82,8 +87,8 @@ class Diagnostic1D:
 
     def log(self, x1, x0):
         """Purely local logging—zero MPI latency or network communication per step."""
-        self.data[self.buf_step, 0] = x0
-        self.data[self.buf_step, 1] = x1
+        self.data[0, self.buf_step] = x0
+        self.data[1, self.buf_step] = x1
         self.buf_step += 1
         
         if self.buf_step >= self.buf_size:
@@ -93,28 +98,30 @@ class Diagnostic1D:
         """Collective flush—reduces entire buffered vector across ranks at once."""
         if self.buf_step == 0:
             return
-
+    
         # 1. Pull active local slice to CPU host memory
-        active_data = self.data[:self.buf_step]
+        active_data = self.data[:, :self.buf_step]
         if hasattr(active_data, "get"):
             active_data = active_data.get()
-
-        x0_local = active_data[:, 0]
-        x1_local = active_data[:, 1]
-
+    
+        # Rows are inherently C-contiguous in memory
+        x0_local = active_data[0]
+        x1_local = active_data[1]
+        
         # 2. Perform chunked vector reduction across MPI ranks
         if self.size > 1 and self.reduce_op is not None:
-            x1_global = self.comm.reduce(x1_local, op=self.reduce_op, root=0)
+            x1_global = np.empty_like(x1_local) if self.rank == 0 else None
+            self.comm.Reduce(x1_local, x1_global, op=self.reduce_op, root=0)
         else:
             x1_global = x1_local
-
-        # 3. Only Rank 0 writes the aggregated array to disk
+    
+        # 3. Only Rank 0 writes to disk
         if self.rank == 0:
             n_samples = len(x0_local)
             with h5py.File(str(self.path), "a") as h5f:
                 dset_time = h5f[f"{self.timeGroupName}/time"]
                 dset_var = h5f[self.name]
-
+    
                 old_size = dset_time.shape[0]
                 new_size = old_size + n_samples
                 
@@ -123,8 +130,8 @@ class Diagnostic1D:
                 
                 dset_time[old_size:new_size] = x0_local
                 dset_var[old_size:new_size] = x1_global
-
-        # 4. Reset local buffer index on all ranks
+    
+        # 4. Reset local buffer index
         self.buf_step = 0
         
     def on_exit(self):
