@@ -40,6 +40,16 @@ def flux_from_current(I, area, maskFactor=1.0, q=None, fudgeFactor=2.0):
     flux_str = f"{flux_val:.16e}"
     
     return flux_val
-    
-    
-    
+
+
+
+class RunningMean:
+    def __init__(self):
+        self.count = 0
+        self.mean = 0.0
+
+    def add(self, value: float) -> float:
+        if value != 0.0:
+            self.count += 1
+            self.mean += (value - self.mean) / self.count
+        return self.mean
