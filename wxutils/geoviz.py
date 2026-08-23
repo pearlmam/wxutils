@@ -1,27 +1,33 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-import trimesh
-from skimage import measure
-# needs module shapely, mapbox-earcut
-
+import functools
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 
-def heaviside(x1,x2):
-    return np.heaviside(x1,x2)
+try:
+    import trimesh
+    from skimage import measure
+    # needs module shapely, mapbox-earcut
+    ENABLED = True
+except ImportError:
+    # silently ignore import errors
+    ENABLED = False
+    pass
 
-def max(x1,x2=None):
-    if x2 is None:
-        return np.max(x1)
-    else:
-        return np.maximum(x1,x2)
+def require_dependency(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if not ENABLED:
+            raise ImportError(f"'{func.__name__}' requires packages 'trimesh' and 'skimage'.")
+        return func(*args, **kwargs)
+    return wrapper
 
 def plot_grid(x,z):
     plt.plot(x, z, color='black', alpha=0.2, linewidth=0.5)
     plt.plot(x.T, z.T, color='black', alpha=0.2, linewidth=0.5)
 
-
+@require_dependency
 def plot_impl(grid, func,enhanceFactor=1.0,fig=1,clear=True):
     dim = len(grid.upper_bound)
     xyz = [0] * 3
@@ -67,6 +73,7 @@ def plot_impl(grid, func,enhanceFactor=1.0,fig=1,clear=True):
         # Optional: check if the mesh is valid
         print(mesh.is_watertight)
 
+@require_dependency
 def plot_impl_trimesh(grid, func,fig=1,clear=True):
     dim = len(grid.upper_bound)
     xyz = [0] * 3
@@ -139,8 +146,8 @@ def plot_impl_trimesh(grid, func,fig=1,clear=True):
         # Optional: check if the mesh is valid
         print(mesh.is_watertight)
 
-
-def gen_impl_vtk(grid, func,enhanceFactor=1.0,filename="output_outline.vtk"):
+@require_dependency
+def gen_impl_vtk(grid, func,enhanceFactor=1.0,path="output_outline.vtk"):
     dim = len(grid.upper_bound)
     xyz = [0] * 3
     lb = grid.lower_bound
@@ -164,7 +171,7 @@ def gen_impl_vtk(grid, func,enhanceFactor=1.0,filename="output_outline.vtk"):
             # Note: indexing='ij' means contour[:, 0] maps to axis 0 (x) and contour[:, 1] maps to axis 1 (z)
             scaled_x = np.interp(contour[:, 0], [0, nc[0]-1], [lb[0], ub[0]])
             scaled_z = np.interp(contour[:, 1], [0, nc[1]-1], [lb[1], ub[1]])
-            save_contour_to_vtk(scaled_x, scaled_z, filename=filename)
+            save_contour_to_vtk(scaled_x, scaled_z, path=path)
             # save_clean_contour_to_vtk(scaled_x, scaled_z, filename="dielectric_sink_1.vtk")
             
     elif dim > 2:
@@ -180,11 +187,12 @@ def gen_impl_vtk(grid, func,enhanceFactor=1.0,filename="output_outline.vtk"):
         
         # Optional: check if the mesh is valid
         print(mesh.is_watertight)
+        
 
-def save_contour_to_vtk(scaled_x, scaled_z, filename="output_outline.vtk"):
+def save_contour_to_vtk(scaled_x, scaled_z, path="output_outline.vtk"):
     num_pts = len(scaled_x)
     
-    with open(filename, "w") as f:
+    with open(path, "w") as f:
         # Write VTK standard header
         f.write("# vtk DataFile Version 3.0\n")
         f.write("Shape Outline Data\n")
@@ -205,9 +213,9 @@ def save_contour_to_vtk(scaled_x, scaled_z, filename="output_outline.vtk"):
         indices_str = " ".join(map(str, indices))
         f.write(f"{num_pts + 1} {indices_str}\n")
         
-    print(f"Saved clean shape outline to {filename}")
+    print(f"Saved clean shape outline to {path}")
     
-def save_clean_contour_to_vtk(scaled_x, scaled_z, filename="output_perfect_outline.vtk"):
+def save_clean_contour_to_vtk(scaled_x, scaled_z, path="output_perfect_outline.vtk"):
     num_pts = len(scaled_x)
     pts = np.column_stack((scaled_x, np.zeros(num_pts), scaled_z))
     
@@ -232,7 +240,7 @@ def save_clean_contour_to_vtk(scaled_x, scaled_z, filename="output_perfect_outli
     total_connectivity_entries = len(line_segments) + num_pts
 
     # 2. Write the formatted VTK file
-    with open(filename, "w") as f:
+    with open(path, "w") as f:
         f.write("# vtk DataFile Version 3.0\n")
         f.write("Clean Multi-Line Shape Outline\n")
         f.write("ASCII\n")
@@ -252,3 +260,12 @@ def save_clean_contour_to_vtk(scaled_x, scaled_z, filename="output_perfect_outli
     print(f"Saved clean wireframe mesh with {len(line_segments)} separated lines.")
 
 
+
+def heaviside(x1,x2):
+    return np.heaviside(x1,x2)
+
+def max(x1,x2=None):
+    if x2 is None:
+        return np.max(x1)
+    else:
+        return np.maximum(x1,x2)

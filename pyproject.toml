@@ -23,12 +23,8 @@ license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
 dependencies = [
-  "trimesh",           # for geoViz
-  "shapely",            # for geoViz
-  "mapbox-earcut",      # for geoViz
-  "scikit-image",      # for geoViz
   "numpy",             # data manipulation
-  "pandas",            # data manipulation
+#   "pandas",            # data manipulation
   "matplotlib",        # for plotting
   "h5py",              # for data saving
 ]
@@ -37,7 +33,12 @@ dependencies = [
 
 warpx = ["warpx"]  # this is required but the user may install from source.
 
-
+geoviz = [  
+  "trimesh",           
+  "shapely",            
+  "mapbox-earcut",      
+  "scikit-image",   
+  ]
 
 
 [project.scripts]
