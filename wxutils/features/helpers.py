@@ -35,3 +35,15 @@ def set_species_params(species, boundary=None):
         for _boundary in boundary:
             setattr(species, boundaryEnable[_boundary], True)
     return species
+
+
+
+def get_valid_region(arr, ngrow):
+    """Slices an array view down to its valid interior, stripping guard cells."""
+    slices = []
+    for ng in ngrow:
+        if ng == 0:
+            slices.append(slice(None))
+        else:
+            slices.append(slice(ng, -ng))
+    return arr[tuple(slices)]
