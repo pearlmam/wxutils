@@ -10,12 +10,12 @@ import numpy as np
 from pywarpx import particle_containers, picmi,callbacks
 from pywarpx.LoadThirdParty import load_cupy
 
-from wxutils.physics import energy_to_velocity
-from wxutils.callbacks.utils import set_species_params
+from wxutils.ops.physics import energy_to_velocity
+from wxutils.features.helpers import set_species_params
 # from wxutils.debug import check_array
 from wxutils.utils import to_cpu
 from wxutils.core import CallbackBase
-from wxutils.callbacks.deposit import Deposit
+from wxutils.features.deposit import Deposit
 from wxutils.diag.store import Diagnostic1D,save_to_npy
 
 constants = picmi.constants

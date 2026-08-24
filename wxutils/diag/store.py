@@ -5,29 +5,11 @@ import h5py
 import numpy as np
 from importlib.metadata import version
 from pywarpx.LoadThirdParty import load_cupy
-from wxutils.utils import mpi_enabled,get_rank,mpiprint
-
-if mpi_enabled:
-    from mpi4py import MPI as mpi
-else:
-    mpi = None
+import wxutils.mpitools as mpit
 
 class DiagnosticBase:
     def __init__(self):
         self.xp, _ = load_cupy()
-    
-    def mpi_info(self):
-        if mpi_enabled:
-            self.comm = mpi.COMM_WORLD
-            self.rank = self.comm.Get_rank()
-            self.size = self.comm.Get_size()
-            self.reduce_op = mpi.SUM
-        else:
-            self.comm = None
-            self.rank = 0
-            self.size = None
-            self.reduce_op = None
-
 
 class Diagnostic1D(DiagnosticBase):
     def __init__(self, path,nsteps=None, interval=None, filetype="h5", datatype=None,reduce_op=None):
@@ -49,10 +31,13 @@ class Diagnostic1D(DiagnosticBase):
         self.buf_size = self.interval if self.interval else self.nsteps
         self.buf_step = 0
         self.data = self.xp.zeros((2, self.buf_size), dtype=self.xp.float64)
-        self.mpi_info()
-        
+
+        if mpit.enabled():
+            self.reduce_op = mpit.mpi.SUM
+        else:
+            self.reduce_op = None
             
-        if self.rank == 0:
+        if mpit.get_rank() == 0:
             os.makedirs(self.path.parent, exist_ok=True)
             self.initialize()
         
@@ -60,7 +45,7 @@ class Diagnostic1D(DiagnosticBase):
 
     def initialize(self):
         """Creates or resets the HDF5 file with VizSchema metadata and empty resizable datasets (Rank 0 only)."""
-        if self.rank != 0:
+        if mpit.get_rank() != 0:
             return
 
         with h5py.File(str(self.path), "w") as h5f:
@@ -117,14 +102,14 @@ class Diagnostic1D(DiagnosticBase):
         x1_local = active_data[1]
         
         # 2. Perform chunked vector reduction across MPI ranks
-        if self.size > 1 and self.reduce_op is not None:
+        if mpit.get_size() > 1 and self.reduce_op is not None:
             x1_global = np.empty_like(x1_local) if self.rank == 0 else None
-            self.comm.Reduce(x1_local, x1_global, op=self.reduce_op, root=0)
+            mpit.get_size().Reduce(x1_local, x1_global, op=self.reduce_op, root=0)
         else:
             x1_global = x1_local
     
         # 3. Only Rank 0 writes to disk
-        if self.rank == 0:
+        if mpit.get_rank() == 0:
             n_samples = len(x0_local)
             with h5py.File(str(self.path), "a") as h5f:
                 dset_time = h5f[f"{self.timeGroupName}/time"]
@@ -153,7 +138,7 @@ class DiagnosticField(DiagnosticBase):
     
 def save_to_npy(field,path,suffix=None):
     global_data = field[...]   # this does an mpi gather on all ranks
-    if get_rank() == 0:
+    if mpit.get_rank() == 0:
         np.save(path, global_data)
 
 def save_to_plotfile(field,path,suffix=None):
@@ -164,7 +149,7 @@ def save_to_h5(field,name='var',path='./',suffix=None):
     global_shape = field.shape
     local_data = field[...]
     local_slice = None
-    comm = mpi.COMM_WORLD
+    comm = mpit.get_comm()
     with h5py.File(path, "w", driver="mpio", comm=comm) as f:
         # Set global dataset shape and write rank-specific slices
         dset = f.create_dataset(name, shape=global_shape, dtype=local_data.dtype)

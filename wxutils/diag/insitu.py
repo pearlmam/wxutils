@@ -8,9 +8,7 @@ from pywarpx.LoadThirdParty import load_cupy
 from pywarpx import particle_containers, picmi,callbacks
 
 from wxutils.utils import to_cpu
-from wxutils.utils import mpi_enabled
-#from warpx_helpers.geoViz import plot_impl,gen_impl_vtk
-from wxutils.utils import get_rank
+import wxutils.mpitools as mpit
 
 colors = 'brgk'
 
@@ -27,10 +25,9 @@ class InSituMPL():
         
         
     def pre_initialize(self,sim):
-        if mpi_enabled():
+        if mpit.enabled() and (mpit.get_rank() == 0):
             # raise Warning("matplotlib plotting is disabled with mpi runs")
-            if get_rank() == 0:
-                print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
+            print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
             return
         
         self.sim = sim

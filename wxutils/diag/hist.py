@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from pywarpx import particle_containers, picmi,callbacks,libwarpx
-from wxutils.callbacks.utils import set_species_params
+from wxutils.features.helpers import set_species_params
 from pywarpx.LoadThirdParty import load_cupy
 from wxutils.diag.store import Diagnostic1D
 from pathlib import Path

@@ -2,7 +2,30 @@
 WarpX Utilities (wxutils)
 =========================
 
-A collection of python functions to aid in model development. This contains callback methods, grid and geometry managment methods, and more....
+A collection of python functions to aid in `WarpX`_ python model development. This contains extra features, diagnostics, and helper functions for `PICMI`_ input files. 
+
+All features and diagnostics are hardware agnostic unless otherwise stated.
+
+Availiable Features
+-------------------
+
+- secondary emission model
+- dielectric surface charge deposition
+
+Availiable Diagnostics
+----------------------
+
+- 1D history diagnostic
+   
+  - Logs scalar data and periodically stores to disc
+  - Stores data in h5 VizSchema format which can be viewed easily from `VisIt`_ using curve 
+
+- 2D/3D field diagnostic [#f1]_
+  
+  - Saves user generated MultiFab fields in `npy` and `h5` format.
+  - stores directly from memory, no unnecesary memory copies
+  
+.. [#f1] These features are under development.
 
 Install
 -------
@@ -43,9 +66,11 @@ This last step uses pip, but its the only way to install an editable install?
 
 
 
-     
-     
+.. _WarpX: https://github.com/BLAST-WarpX/warpx
 
+.. _PICMI: https://warpx.readthedocs.io/en/latest/usage/python.html
+     
+.. _VisIt: https://visit-sphinx-github-user-manual.readthedocs.io/en/v3.1.2/index.html#
 
 
 
