@@ -5,14 +5,31 @@ import h5py
 import numpy as np
 from importlib.metadata import version
 from pywarpx.LoadThirdParty import load_cupy
-from wxutils.utils import mpi_enabled
+from wxutils.utils import mpi_enabled,get_rank,mpiprint
+
 if mpi_enabled:
     from mpi4py import MPI as mpi
 else:
     mpi = None
 
+class DiagnosticBase:
+    def __init__(self):
+        self.xp, _ = load_cupy()
+    
+    def mpi_info(self):
+        if mpi_enabled:
+            self.comm = mpi.COMM_WORLD
+            self.rank = self.comm.Get_rank()
+            self.size = self.comm.Get_size()
+            self.reduce_op = mpi.SUM
+        else:
+            self.comm = None
+            self.rank = 0
+            self.size = None
+            self.reduce_op = None
 
-class Diagnostic1D:
+
+class Diagnostic1D(DiagnosticBase):
     def __init__(self, path,nsteps=None, interval=None, filetype="h5", datatype=None,reduce_op=None):
         self.xp, _ = load_cupy()
 
@@ -32,17 +49,8 @@ class Diagnostic1D:
         self.buf_size = self.interval if self.interval else self.nsteps
         self.buf_step = 0
         self.data = self.xp.zeros((2, self.buf_size), dtype=self.xp.float64)
+        self.mpi_info()
         
-        if mpi_enabled:
-            self.comm = mpi.COMM_WORLD
-            self.rank = self.comm.Get_rank()
-            self.size = self.comm.Get_size()
-            self.reduce_op = mpi.SUM
-        else:
-            self.comm = None
-            self.rank = 0
-            self.size = None
-            self.reduce_op = None
             
         if self.rank == 0:
             os.makedirs(self.path.parent, exist_ok=True)
@@ -136,3 +144,31 @@ class Diagnostic1D:
         
     def on_exit(self):
         self.save()
+        
+        
+class DiagnosticField(DiagnosticBase):
+    def __init__(self,backend):
+        self.backend=backend
+        
+    
+def save_to_npy(field,path,suffix=None):
+    global_data = field[...]   # this does an mpi gather on all ranks
+    if get_rank() == 0:
+        np.save(path, global_data)
+
+def save_to_plotfile(field,path,suffix=None):
+    raise NotImplementedError(f"save_to_plotfile not implemented")
+    
+def save_to_h5(field,name='var',path='./',suffix=None):
+    raise NotImplementedError(f"save_to_h5 not implemented")
+    global_shape = field.shape
+    local_data = field[...]
+    local_slice = None
+    comm = mpi.COMM_WORLD
+    with h5py.File(path, "w", driver="mpio", comm=comm) as f:
+        # Set global dataset shape and write rank-specific slices
+        dset = f.create_dataset(name, shape=global_shape, dtype=local_data.dtype)
+        dset[local_slice] = local_data
+    
+    
+    
