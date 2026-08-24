@@ -7,7 +7,7 @@ from pathlib import Path
 from mpi4py import MPI as mpi
 
 import numpy as np
-from pywarpx import particle_containers, picmi,callbacks,libwarpx
+from pywarpx import particle_containers, picmi,callbacks
 from pywarpx.LoadThirdParty import load_cupy
 
 from wxutils.physics import energy_to_velocity
@@ -16,10 +16,9 @@ from wxutils.callbacks.utils import set_species_params
 from wxutils.utils import to_cpu
 from wxutils.core import CallbackBase
 from wxutils.callbacks.deposit import Deposit
-from wxutils.diag.store import Diagnostic1D
+from wxutils.diag.store import Diagnostic1D,save_to_npy
 
 constants = picmi.constants
-
 
 saveloc = Path('./diags/hist')
 class SecondaryEmission(CallbackBase):
@@ -36,13 +35,17 @@ class SecondaryEmission(CallbackBase):
         self.rhoSurfName = kw.pop("rhoSurf","rho_surf")
         self.wThresh = kw.pop("wThresh",1e-5)
         self.backend = kw.pop("backend","cupy") # 'cupy' will fallback to numpy if on cpu
-        self.deposit_sink = kw.pop("deposit_sink",None)
+        self.dep_method = kw.pop("dep_method","warpx")
+        self.dep_sink = kw.pop("dep_sink",None)
+        
         self.debug = kw.pop("debug",None)
         
         if self.species1 is None:
             self.species1 = self.species0
         else:
             self.species1 = set_species_params(self.species1)
+        
+        
         
         self.Uemit = energy_to_velocity(self.Eemit)
         self.saveloc = "./diags/fields/"
@@ -72,14 +75,13 @@ class SecondaryEmission(CallbackBase):
         sim.add_species(self.surface_species1,layout=layout)
         self.deposit = Deposit(sim=self.sim,rho=self.rhoSurfName,
                                species=[self.surface_species0,self.surface_species1],
-                               method='warpx')
+                               method=self.dep_method,sink=self.dep_sink)
     
     def post_initialize(self):
         self.xp, _ = load_cupy()
         self.sey = NumericalSEY(self.Emax,self.Emin,backend=self.backend)
         self.get_impact_energy = ImpactEnergyCalculator(self.species0.mass,backend=self.backend)
-        self.initialize_surface_rho(self.rhoSurfName)
-        self.rhoSurf = self.sim.fields.get(self.rhoSurfName,level=self.lev)
+        self.rhoSurf = self.initialize_surface_rho(self.rhoSurfName)
         self.rho = self.sim.fields.get("rho_fp",level=self.lev)
         self.species1_pc = self.sim.particles.get(self.species1.name)
         self.surface_species0_pc = self.sim.particles.get(self.surface_species0.name)
@@ -89,7 +91,24 @@ class SecondaryEmission(CallbackBase):
         self.setup_diagnostics()
         if self.dumprate is not None:
             os.makedirs(self.saveloc,exist_ok=True)
+            self.dumprate = int(self.dumprate)
             
+    def initialize_surface_rho(self,name="rho_surf"):
+        if self.sim.fields.has(name,self.lev):
+            return
+        rho = self.sim.fields.get('rho_fp',level=self.lev)
+        self.rhoSurf = self.sim.fields.alloc_init(name=name,
+                            level=self.lev,
+                            ba=rho.box_array(),
+                            dm=rho.dm(),
+                            ncomp=rho.n_comp,
+                            ngrow=rho.n_grow_vect,
+                            initial_value=0.,
+                            redistribute=True,
+                            redistribute_on_remake=True,
+                            checkpoint_restart=False)
+        return self.rhoSurf
+
 
     def _gen_secondary(self,x,z,y,ux,uz,uy,nx,nz,ny,w,delta_t):
         eng = self.get_impact_energy(ux,uz)
@@ -147,34 +166,17 @@ class SecondaryEmission(CallbackBase):
         I = self.mask(x, z) if self.mask is not None else True
         self._gen_secondary(x[I], z[I], None, ux[I], uz[I], None, nx[I], nz[I], None, w[I], delta_t[I])
         
-    def initialize_surface_rho(self,name="rho_surf"):
-        if self.sim.fields.has(name,self.lev):
-            return
-        rho = self.sim.fields.get('rho_fp',level=self.lev)
-        self.sim.fields.alloc_init(name=name,
-                            level=self.lev,
-                            ba=rho.box_array(),
-                            dm=rho.dm(),
-                            ncomp=rho.n_comp,
-                            ngrow=rho.n_grow_vect,
-                            initial_value=0.,
-                            redistribute=True,
-                            redistribute_on_remake=True,
-                            checkpoint_restart=False)
-
     def add_surface_charge(self):
         self.rho.saxpy(1.0, self.rhoSurf, 0, 0, 1, 0)
-        #self.save_field(self.rho,"rho_total")
+        self.save_field(self.rho,"rho_total")
+        self.save_field(self.rhoSurf,"rho_surf")
     
     def save_field(self,field,savename):
         if self.dumprate is not None:
             i = self.sim.extension.warpx.getistep(0)
             if i % self.dumprate == 0:
-                field_data = field[...]
-                if hasattr(field_data, "get"):
-                    field_data = field_data.get()
-                if libwarpx.amr.ParallelDescriptor.MyProc() == 0:
-                    np.save(f"{self.saveloc}/{savename}_{i}.npy", field_data)
+                path = f"{self.saveloc}/{savename}_{i}.npy"
+                save_to_npy(field,path)
     
     def setup_diagnostics(self):
         if self.debug:
