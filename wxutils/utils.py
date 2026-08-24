@@ -25,6 +25,17 @@ def to_cpu(arr):
     """Converts a CuPy array to NumPy, or returns the NumPy array as-is."""
     return arr.get() if hasattr(arr, 'get') else arr
 
+def mpiprint(string, ranks=0):
+    flush = True
+    if not isinstance(ranks,(list,tuple,str)):
+        ranks = [ranks]
+    elif isinstance(ranks,(str)) and ranks.lower() == "all":
+        print(f"Rank {get_rank()}: {string}",flush=flush)
+        return
+    if get_rank() in ranks:
+        print(f"Rank {get_rank()}: {string}",flush=flush)
+    
+
 
         
 def delete_diagnostics():
