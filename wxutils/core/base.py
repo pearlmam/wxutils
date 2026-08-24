@@ -38,10 +38,10 @@ class CallbackBase(Setup):
         if not hasattr(self,'sim'):
             raise AttributeError(f"class {self.__class__.__name__} must be run pre_initialize() before grid_info() can be called.")
         self.dims = self.sim.solver.grid.number_of_dimensions
-        self.cells = self.sim.solver.grid.number_of_cells
+        self.number_of_cells = self.sim.solver.grid.number_of_cells
         self.lower_bound = self.sim.solver.grid.lower_bound
         self.upper_bound = self.sim.solver.grid.upper_bound
-        self.dxyz = self.xp.array((self.xp.array(self.upper_bound)-self.xp.array(self.lower_bound))/self.xp.array(self.cells))
+        self.dxyz = self.xp.array((self.xp.array(self.upper_bound)-self.xp.array(self.lower_bound))/self.xp.array(self.number_of_cells))
         
     def concat(self, list_of_arrays,*args,**kwargs):
         if len(list_of_arrays) == 0:
