@@ -25,9 +25,10 @@ class InSituMPL():
         
         
     def pre_initialize(self,sim):
-        if mpit.enabled() and (mpit.get_rank() == 0):
-            # raise Warning("matplotlib plotting is disabled with mpi runs")
-            print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
+        if mpit.enabled():
+            if mpit.get_rank() == 0:
+                # raise Warning("matplotlib plotting is disabled with mpi runs")
+                print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
             return
         
         self.sim = sim
