@@ -103,8 +103,8 @@ class Diagnostic1D(DiagnosticBase):
         
         # 2. Perform chunked vector reduction across MPI ranks
         if mpit.get_size() > 1 and self.reduce_op is not None:
-            x1_global = np.empty_like(x1_local) if self.rank == 0 else None
-            mpit.get_size().Reduce(x1_local, x1_global, op=self.reduce_op, root=0)
+            x1_global = np.empty_like(x1_local) if mpit.get_rank() == 0 else None
+            mpit.get_comm().Reduce(x1_local, x1_global, op=self.reduce_op, root=0)
         else:
             x1_global = x1_local
     
