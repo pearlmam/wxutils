@@ -59,23 +59,28 @@ class SecondaryEmission(CallbackBase):
         callbacks.installcallback("beforeInitEsolve", self.post_initialize)
         callbacks.installafterstep(self.gen_secondary)
         callbacks.installcallback("afterdeposition",self.add_surface_charge)
-        
+        extra_attrs = {"nx":0.0,"nz":0.0}
         self.surface_species0 = picmi.Species(name="surface_species0",
                                         mass = self.species0.mass,
                                         charge = self.species0.charge,
                                         warpx_save_particles_at_eb=False,
+                                        warpx_add_real_attributes = extra_attrs,
                                         )
         self.surface_species1 = picmi.Species(name="surface_species1",
                                         mass = self.species1.mass,
                                         charge = -self.species1.charge,
                                         warpx_save_particles_at_eb=False,
+                                        warpx_add_real_attributes = extra_attrs,
                                         )
         layout = picmi.PseudoRandomLayout(n_macroparticles_per_cell=[1,1], grid=self.sim.solver.grid)
         sim.add_species(self.surface_species0,layout=layout)
         sim.add_species(self.surface_species1,layout=layout)
-        self.deposit = Deposit(sim=self.sim,rho=self.rhoSurfName,
+        self.deposit = Deposit(sim=self.sim,
+                               rho=self.rhoSurfName,
                                species=[self.surface_species0,self.surface_species1],
-                               method=self.dep_method,sink=self.dep_sink)
+                               method=self.dep_method,
+                               sink=self.dep_sink,
+                               persistent_charge=True)
     
     def post_initialize(self):
         self.xp, _ = load_cupy()
@@ -109,7 +114,6 @@ class SecondaryEmission(CallbackBase):
                             checkpoint_restart=False)
         return self.rhoSurf
 
-
     def _gen_secondary(self,x,z,y,ux,uz,uy,nx,nz,ny,w,delta_t):
         eng = self.get_impact_energy(ux,uz)
         nSec = self.sigmaMax*self.sey(eng)
@@ -135,15 +139,8 @@ class SecondaryEmission(CallbackBase):
         )  
         
         # Determine charge
-        # self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w))  
-        # self.surface_species0_pc.deposit_charge(self.rhoSurf,lev=self.lev)
-        # self.surface_species0_pc.clear_particles()
-        # self.surface_species1_pc.add_particles(x=to_cpu(x[I]),z=to_cpu(z[I]),w=wSec)
-        # self.surface_species1_pc.deposit_charge(self.rhoSurf,lev=self.lev)
-        # self.surface_species1_pc.clear_particles()
-        
-        self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w))  
-        self.surface_species1_pc.add_particles(x=to_cpu(x[I]),z=to_cpu(z[I]),w=wSec)
+        self.surface_species0_pc.add_particles(x=to_cpu(x),z=to_cpu(z),w=to_cpu(w),nx=to_cpu(nx),nz=to_cpu(nz) )  
+        self.surface_species1_pc.add_particles(x=to_cpu(x[I]),z=to_cpu(z[I]),w=wSec,nx=to_cpu(nx[I]),nz=to_cpu(nz[I]))
         self.deposit.deposit_charge()
         self.surface_species0_pc.clear_particles()
         self.surface_species1_pc.clear_particles()
@@ -151,14 +148,7 @@ class SecondaryEmission(CallbackBase):
         if self.debug:
             # self.avg_sey.log(nSec.sum(),self.sim.extension.warpx.gett_new(self.lev),count=nSec.size)
             print(f"N Secondaries Avg: {nSec.mean()}")
-    
-    
-    def get_buffer_data(self, species_name, boundary, variables, lev=0):
-        return tuple(
-            self.concat(self.buffer.get_particle_scraped_this_step(species_name, boundary, var, lev))
-            for var in variables
-        )
-    
+
     def gen_secondary(self):
         name = self.species0.name
         boundary = self.boundary
@@ -177,6 +167,12 @@ class SecondaryEmission(CallbackBase):
             if i % self.dumprate == 0:
                 path = f"{self.saveloc}/{savename}_{i}.npy"
                 save_to_npy(field,path)
+                
+    def get_buffer_data(self, species_name, boundary, variables, lev=0):
+        return tuple(
+            self.concat(self.buffer.get_particle_scraped_this_step(species_name, boundary, var, lev))
+            for var in variables
+        )
     
     def setup_diagnostics(self):
         if self.debug:
