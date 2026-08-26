@@ -32,6 +32,8 @@ dependencies = [
 [project.optional-dependencies]
 
 warpx = ["warpx"]  # this is required but the user may install from source.
+pyro = ["Pyro5@git+https://github.com/pearlmam/Pyro5.git"]
+
 
 geoviz = [  
   "trimesh",           
@@ -42,6 +44,7 @@ geoviz = [
 
 
 [project.scripts]
+warpx-dispatch = "wxutils.dispatch:main"
 
 
 [project.urls]
