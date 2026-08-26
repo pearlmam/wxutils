@@ -33,12 +33,16 @@ def get_comm():
         return mpi.COMM_WORLD
 
 def mpi_print(string, ranks=0):
-    flush = True
-    if not isinstance(ranks,(list,tuple,str)):
-        ranks = [ranks]
-    elif isinstance(ranks,(str)) and ranks.lower() == "all":
-        print(f"Rank {get_rank()}: {string}", flush=flush)
+    rank = get_rank()
+    
+    # Early exit conditions where EVERY rank prints
+    if (ranks == "all") or (isinstance(ranks, (int, float)) and ranks < 0):
+        print(f"Rank {rank}: {string}", flush=True)
         return
-    if get_rank() in ranks:
-        print(f"Rank {get_rank()}: {string}", flush=flush)
+
+    # Handle standard case (single rank or collection of ranks)
+    allowed_ranks = ranks if isinstance(ranks, (list, tuple)) else [ranks]
+    
+    if rank in allowed_ranks:
+        print(f"Rank {rank}: {string}", flush=True)
     
