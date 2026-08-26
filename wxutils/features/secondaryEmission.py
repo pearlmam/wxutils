@@ -10,26 +10,30 @@ import numpy as np
 from pywarpx import particle_containers, picmi,callbacks
 from pywarpx.LoadThirdParty import load_cupy
 
-from wxutils.ops.physics import energy_to_velocity
+from wxutils.ops.physics import energy_to_velocity, apply_angular_dist
 from wxutils.features.helpers import set_species_params
 # from wxutils.debug import check_array
 from wxutils.utils import to_cpu
 from wxutils.core import CallbackBase
 from wxutils.features.deposit import Deposit
 from wxutils.diag.store import Diagnostic1D,save_to_npy
+import wxutils.mpitools as mpit
 
 constants = picmi.constants
 
 saveloc = Path('./diags/hist')
 class SecondaryEmission(CallbackBase):
-    def __init__(self,species0,sigmaMax,Emax,boundary="eb",**kw):
+    def __init__(self,species0,sey_yield_max,sey_energy_max,boundary="eb",**kw):
         self.boundary = boundary
         self.species0 = set_species_params(species0,boundary)
         self.species1 = kw.pop("species1", None)
-        self.sigmaMax = sigmaMax
-        self.Emax = Emax
-        self.Emin = kw.pop("Emin", 5.0)
-        self.Eemit = kw.pop("Eemit", 5.0)
+        self.sey_yield_max = sey_yield_max
+        self.sey_energy_max = sey_energy_max
+        self.sey_energy_thresh = kw.pop("sey_energy_thresh", 5.0)
+        self.sec_emit_energy = kw.pop("sec_emit_energy", 5.0)
+        self.sigma_energy = kw.pop("sigma_energy", self.sec_emit_energy*.1)
+        self.sigma_theta_deg = kw.pop("sigma_theta_deg", 10.0)
+        self.relativistic = kw.pop("relativistic", True)
         self.mask = kw.pop("mask",None)
         self.dumprate = kw.pop("dumprate",None)
         self.rhoSurfName = kw.pop("rhoSurf","rho_surf")
@@ -37,17 +41,19 @@ class SecondaryEmission(CallbackBase):
         self.backend = kw.pop("backend","cupy") # 'cupy' will fallback to numpy if on cpu
         self.dep_method = kw.pop("dep_method","warpx")
         self.dep_sink = kw.pop("dep_sink",None)
-        
+        self.dep_nudge_n = kw.pop("dep_nudge_n",None)
+        self.dep_split_spread = kw.pop("dep_split_spread",None)
+        self.dep_split_weights = kw.pop("dep_split_weights",[0.25,0.5,0.25])
+        self.dep_debug = kw.pop("dep_debug",None)
         self.debug = kw.pop("debug",None)
         
         if self.species1 is None:
             self.species1 = self.species0
         else:
             self.species1 = set_species_params(self.species1)
-        
-        
-        
-        self.Uemit = energy_to_velocity(self.Eemit)
+         
+        self.sigma_theta_rad = np.deg2rad(self.sigma_theta_deg)
+        self.Uemit = energy_to_velocity(self.sec_emit_energy,self.species1.mass,relativistic=self.relativistic)  # depriciated
         self.saveloc = "./diags/fields/"
         self.rank = mpi.COMM_WORLD.Get_rank()
         self.lev = 0
@@ -80,11 +86,16 @@ class SecondaryEmission(CallbackBase):
                                species=[self.surface_species0,self.surface_species1],
                                method=self.dep_method,
                                sink=self.dep_sink,
-                               persistent_charge=True)
-    
+                               persistent_charge=True,
+                               nudge_n=self.dep_nudge_n,
+                               split_spread=self.dep_split_spread,
+                               split_weights=self.dep_split_weights,
+                               debug = self.dep_debug,
+                               )
     def post_initialize(self):
         self.xp, _ = load_cupy()
-        self.sey = NumericalSEY(self.Emax,self.Emin,backend=self.backend)
+        self.rng = self.xp.random.default_rng()
+        self.sey = NumericalSEY(self.sey_energy_max,self.sey_energy_thresh,backend=self.backend)
         self.get_impact_energy = ImpactEnergyCalculator(self.species0.mass,backend=self.backend)
         self.rhoSurf = self.initialize_surface_rho(self.rhoSurfName)
         self.rho = self.sim.fields.get("rho_fp",level=self.lev)
@@ -116,15 +127,15 @@ class SecondaryEmission(CallbackBase):
 
     def _gen_secondary(self,x,z,y,ux,uz,uy,nx,nz,ny,w,delta_t):
         eng = self.get_impact_energy(ux,uz)
-        nSec = self.sigmaMax*self.sey(eng)
+        nSec = self.sey_yield_max*self.sey(eng)
         
         wSec = w*nSec
         I = (wSec>self.wThresh)
         wSec = to_cpu(wSec[I])
-        uxSec = self.Uemit * nx[I]
-        uzSec = self.Uemit * nz[I]
+        eng_emit = self.rng.normal(self.sec_emit_energy, self.sigma_energy, len(wSec))
+        u_emit = energy_to_velocity(eng_emit,self.species1.mass,relativistic=self.relativistic,xp=self.xp)
+        uxSec, uzSec = apply_angular_dist(u_emit, nx[I], nz[I], self.sigma_theta_rad, rng=self.rng,xp=self.xp)
         tr = self.sim.time_step_size - delta_t[I]
-        
         xSec = to_cpu(x[I] + tr * uxSec)
         zSec = to_cpu(z[I] + tr * uzSec)
         
@@ -146,8 +157,18 @@ class SecondaryEmission(CallbackBase):
         self.surface_species1_pc.clear_particles()
         
         if self.debug:
+            step = self.sim.extension.warpx.getistep(self.lev)
+            ranks = 1 if mpit.enabled() else 0 
+            angles = self.xp.rad2deg(self.xp.arctan2(uzSec, uxSec))
+            ang_mean = angles.mean()
+            ang_std = angles.std()
+            eng_mean = eng_emit.mean()
+            eng_std = eng_emit.std()
             # self.avg_sey.log(nSec.sum(),self.sim.extension.warpx.gett_new(self.lev),count=nSec.size)
-            print(f"N Secondaries Avg: {nSec.mean()}")
+            mpit.mpi_print("##########  Secondary Emissiot Debug: Step %i  #######\n"%step)
+            mpit.mpi_print(f"N Secondaries Avg: {nSec.mean()}",ranks=ranks)
+            mpit.mpi_print(f"emission energies: {eng_mean} +- {eng_std}",ranks=ranks)
+            mpit.mpi_print(f"emission angles: {ang_mean} +- {ang_std}",ranks=ranks)
 
     def gen_secondary(self):
         name = self.species0.name
