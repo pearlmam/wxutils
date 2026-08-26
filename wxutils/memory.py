@@ -20,7 +20,7 @@ class BufferManager:
             callbacks.installafterstep(self.clear)
         
     def post_initialize(self):
-        # self.xp, _ = load_cupy()
+        self.xp, _ = load_cupy()
         self.buffer = particle_containers.ParticleBoundaryBufferWrapper()
         
     def clear(self):
