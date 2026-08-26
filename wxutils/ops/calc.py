@@ -37,7 +37,7 @@ def flux_from_current(I, area, maskFactor=1.0, q=None, fudgeFactor=2.0):
         
     # Physical particle flux: [particles / (s * m^2)]
     flux_val = I / (q * area)*maskFactor*fudgeFactor
-    flux_str = f"{flux_val:.16e}"
+    # flux_str = f"{flux_val:.16e}"
     
     return flux_val
 
