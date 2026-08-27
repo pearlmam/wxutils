@@ -24,6 +24,8 @@ import shutil
 import dmanage.metadata.metastring as meta
 from abc import ABC, abstractmethod
 import inspect
+import atexit
+import weakref
 
 defaultPyroDispatchHost = "localhost"
 defaultPyroDispatchPort = 44444
@@ -46,19 +48,37 @@ def check_path(path):
         file_path=None
     return dir_path, file_path
 
-def load_job_config(inject_globals: bool = True) -> dict:
-    """Loads JSON job configuration from the JOB_CONFIG environment variable.
-    
-    If inject_globals is True, injected keys become module-level global variables
-    in the calling script. Returns the parsed configuration dictionary.
-    """
+def load_job_config(inject_globals: bool = True, require_existing: bool = True) -> dict:
     config_raw = os.environ.get("JOB_CONFIG", "{}")
     config = json.loads(config_raw)
 
+    is_managed = config.pop("_managed", False)
+
+    # Return cleanly if run from terminal OR if scheduler passed no parameter overrides
+    if not is_managed or not config:
+        return {}
+
     if inject_globals:
-        # Step back one frame to access the caller's global scope
         caller_globals = inspect.currentframe().f_back.f_globals
-        caller_globals.update(config)
+        modified_count = 0
+
+        for key, new_val in config.items():
+            if require_existing and key not in caller_globals:
+                raise KeyError(
+                    f"Parameter '{key}' in JOB_CONFIG is not defined in the input script. "
+                    "Ensure default values are declared in the script before calling load_job_config()."
+                )
+
+            if caller_globals.get(key) != new_val:
+                caller_globals[key] = new_val
+                modified_count += 1
+
+        if modified_count == 0:
+            pass
+            # raise ValueError(
+            #     "JOB_CONFIG parameters were passed, but 0 global variables were modified "
+            #     "(the overrides passed were identical to the script's hardcoded defaults)."
+            # )
 
     return config
 
@@ -148,26 +168,39 @@ class Job:
             "elapsed_time": self.elapsed_time,
         }
     
-@pyro_expose
-class Scheduler(ABC):
-    def __init__(self, max_concurrent_jobs: int = 2, poll_interval: float = 1.0):
-        self.jobs: Dict[str, Job] = {}
+
+class BaseScheduler(ABC):
+    """Core scheduler engine handling background threads, job queues, and process cleanup."""
+
+    def __init__(self, max_concurrent_jobs: int = 2, poll_interval: float = 2.0):
+        self.jobs: Dict[str, Any] = {}
         self.max_concurrent_jobs = max_concurrent_jobs
+        self.max_concurrent_cores = 1
         self.poll_interval = poll_interval
-        
-        # Shutdown flag for background thread
+        self.max_retries = 3
+
         self._running = True
-        
-        # Start background monitoring thread
         self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
         self._monitor_thread.start()
-        self.max_retries = 3
-    
-    @abstractmethod 
-    def _start_job(self, job: Job) -> None:
+
+        # Finalizer handles both garbage collection (del) and process exit automatically.
+        # No extra atexit registration needed as weakref.finalize handles atexit internally.
+        self._finalizer = weakref.finalize(
+            self,
+            BaseScheduler._finalizer_routine,
+            self.jobs,
+            self._monitor_thread
+        )
+
+    # -------------------------------------------------------------------------
+    # Internal Loop & Queue Management
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    def _start_job(self, job: Any) -> None:
         """Child classes MUST implement this method to handle process execution."""
         pass
-    
+
     def _scheduler_loop(self) -> None:
         """Background loop: polls active jobs and launches pending ones."""
         while self._running:
@@ -176,18 +209,18 @@ class Scheduler(ABC):
                 self._process_queue()
             except Exception as e:
                 print(f"Error in scheduler loop: {e}")
-            
+
             time.sleep(self.poll_interval)
-        
-    def _poll_job(self, job: Job) -> Dict[str, Any]:
-       """Polls an active process, updates status on completion, and cleans up handles."""
-       if job.status == "RUNNING" and job._proc:
-           retcode = job._proc.poll()
-           if retcode is not None:
-               job.exit_code = retcode
-               job.mark_finished("COMPLETED" if retcode == 0 else "FAILED")
-               self._cleanup_job_handles(job)
-       return job.to_dict()
+
+    def _poll_job(self, job: Any) -> Dict[str, Any]:
+        """Polls an active process, updates status on completion, and cleans up handles."""
+        if job.status == "RUNNING" and job._proc:
+            retcode = job._proc.poll()
+            if retcode is not None:
+                job.exit_code = retcode
+                job.mark_finished("COMPLETED" if retcode == 0 else "FAILED")
+                self._cleanup_job_handles(job)
+        return job.to_dict()
 
     def _update_job_statuses(self) -> None:
         """Updates status for all currently running jobs via _poll_job."""
@@ -200,20 +233,20 @@ class Scheduler(ABC):
                 job.mark_finished("FAILED")
                 job.exit_code = -1
                 self._cleanup_job_handles(job)
-    
+
     def _process_queue(self) -> None:
         """Launches queued jobs up to max slots with launch retry tracking."""
         running_jobs = [j for j in self.jobs.values() if j.status == "RUNNING"]
         queued_jobs = [j for j in self.jobs.values() if j.status == "QUEUED"]
         available_slots = self.max_concurrent_jobs - len(running_jobs)
-    
+
         for job in queued_jobs[:available_slots]:
             try:
                 self._start_job(job)
             except Exception as e:
                 job.retry_count += 1
                 self._cleanup_job_handles(job)
-    
+
                 if job.retry_count <= self.max_retries:
                     print(
                         f"Warning: Launch failed for job '{job.job_id}' "
@@ -226,51 +259,114 @@ class Scheduler(ABC):
                     )
                     job.mark_finished("FAILED")
                     job.exit_code = -1
-            
-            
-    def _cleanup_job_handles(self, job: Job) -> None:
-        if job._log_file and not job._log_file.closed:
-            job._log_file.close()
-        job._proc = None
-        
+
+    
     def _generate_job_id(self, prefix: str = "job") -> str:
-        """Generates a short, unique ID (e.g., job_a1b2c3d4)."""
         return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
-    def _compose_path(self,params, equiv='-', sep='/', order=False,format=None,numDecimals=3):
-        run_base_dir = Path(self.run_base_dir)
-        tail_path = Path(meta.compose(params,equiv, sep, order,format,numDecimals) )
-        return run_base_dir / tail_path
+    # -------------------------------------------------------------------------
+    # Static Resource Cleanup Helpers
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _cleanup_job_handles(job: Any) -> None:
+        """Flushes/closes open log file handles and clears process references."""
+        log_file = getattr(job, "_log_file", None)
+        if log_file and not log_file.closed:
+            try:
+                log_file.flush()
+                log_file.close()
+            except (OSError, ValueError):
+                pass
+        job._proc = None
+
+    @staticmethod
+    def _cleanup_job_proc(job: Any, force: bool = False, timeout: float = 3.0) -> None:
+        """Kills the OS process group associated with a single job and releases file handles."""
+        proc = getattr(job, "_proc", None)
+        
+        if proc and proc.poll() is None:
+            try:
+                pgid = os.getpgid(proc.pid)
+                if force:
+                    os.killpg(pgid, signal.SIGKILL)
+                    proc.wait(timeout=1.0)
+                else:
+                    os.killpg(pgid, signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(pgid, signal.SIGKILL)
+                        proc.wait(timeout=1.0)
+            except (ProcessLookupError, OSError):
+                pass
     
-    ###########################
-    # process managment
-    ###########################
-    
-    @pyro_expose
-    def kill_job(self, job: str | Job, include_queued: bool = True):
-        job = self.jobs[job] if isinstance(job, str) else job
-        if job.status == "RUNNING" and job._proc:
-            # Terminate the process group (parent mpiexec + worker threads)
-            os.killpg(os.getpgid(job._proc.pid), signal.SIGTERM)
-            job._proc.wait()
-            job.mark_finished("KILLED")
-            self._cleanup_job_handles(job)
-        if job.status == "QUEUED" and include_queued:
-            job.mark_finished("KILLED")
-    @pyro_expose        
-    def kill_active_jobs(self,include_queued: bool = True):
-        for job in self.jobs.values():
-            self.kill_job(job,include_queued)
+        # Ensure log handles are closed and flushed regardless of exit state
+        BaseScheduler._cleanup_job_handles(job)
+
+    @staticmethod
+    def _cleanup_all_procs(jobs: dict, force: bool = True) -> None:
+        """Terminates processes for all active jobs in the dictionary."""
+        for job in list(jobs.values()):
+            BaseScheduler._cleanup_job_proc(job, force=force)
+
+    @staticmethod
+    def _finalizer_routine(jobs: dict, thread: Any) -> None:
+        """Static callback executed by weakref.finalize on del or process exit."""
+        BaseScheduler._cleanup_all_procs(jobs, force=True)
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
             
-    ###########################
-    # scheduler managment
-    ###########################
+    def __del__(self):
+        
+
+
+@pyro_expose
+class Scheduler(BaseScheduler):
+    """User-facing and RPC-exposed management interface."""
+
+    # -------------------------------------------------------------------------
+    # Process & Job Controls
+    # -------------------------------------------------------------------------
+
     @pyro_expose
-    def status_scheduler(self):
+    def kill_job(self, job: str | Any, include_queued: bool = True, force: bool = False) -> Dict[str, Any]:
+        """Kills a single job using _cleanup_job_proc and updates handles/status."""
+        job_obj = self.jobs[job] if isinstance(job, str) else job
+
+        if job_obj.status == "RUNNING":
+            self._cleanup_job_proc(job_obj, force=force)
+            job_obj.mark_finished("KILLED")
+            self._cleanup_job_handles(job_obj)
+        elif job_obj.status == "QUEUED" and include_queued:
+            job_obj.mark_finished("KILLED")
+
+        return job_obj.to_dict()
+
+    @pyro_expose
+    def kill_active_jobs(self, include_queued: bool = True, force: bool = False) -> List[Dict[str, Any]]:
+        """Kills all running and queued jobs."""
+        for job in list(self.jobs.values()):
+            self.kill_job(job, include_queued=include_queued, force=force)
+        return [j.to_dict() for j in self.jobs.values()]
+
+    @pyro_expose
+    def cleanup(self) -> None:
+        """Full cleanup method for explicit or RPC invocations."""
+        self.kill_active_jobs(force=True)
+        self.stop_scheduler()
+        if self._finalizer.alive:
+            self._finalizer()
+
+    # -------------------------------------------------------------------------
+    # Daemon Lifecycle Controls
+    # -------------------------------------------------------------------------
+
+    @pyro_expose
+    def status_scheduler(self) -> bool:
         return self._monitor_thread.is_alive()
-    
+
     @pyro_expose
-    def start_scheduler(self):
+    def start_scheduler(self) -> bool:
         if self.status_scheduler():
             print("Scheduler is already started")
         else:
@@ -278,32 +374,43 @@ class Scheduler(ABC):
             self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
             self._monitor_thread.start()
         return self.status_scheduler()
-    
+
     @pyro_expose
-    def stop_scheduler(self, timeout=5.0):
+    def stop_scheduler(self, timeout: float = 5.0) -> bool:
         self._running = False
         start_time = time.time()
-        
+
         while self.status_scheduler():
             if time.time() - start_time > timeout:
                 break
             time.sleep(0.1)
         return self.status_scheduler()
-    
-    @pyro_expose    
-    def restart_schedular(self):
+
+    @pyro_expose
+    def restart_scheduler(self) -> bool:
         self.stop_scheduler()
         self.start_scheduler()
         return self.status_scheduler()
-    
+
+    # -------------------------------------------------------------------------
+    # Configuration Setters
+    # -------------------------------------------------------------------------
+
     @pyro_expose
-    def set_poll_interval(self,poll_interval):
+    def set_poll_interval(self, poll_interval: float) -> None:
         self.poll_interval = poll_interval
 
+    @pyro_expose
+    def set_max_concurrent_jobs(self, max_concurrent_jobs: int) -> None:
+        self.max_concurrent_jobs = max_concurrent_jobs
+
+    @pyro_expose
+    def set_max_concurrent_cores(self, max_concurrent_cores: int) -> None:
+        self.max_concurrent_cores = max_concurrent_cores
 
 @pyro_expose
 class DispatchDaemon(Scheduler):
-    def __init__(self,run_base_dir=None,max_concurrent_jobs = 2, poll_interval = 1.0):
+    def __init__(self,run_base_dir=None,max_concurrent_jobs = 2, poll_interval = 2.0):
         super().__init__(max_concurrent_jobs, poll_interval)
         
         self.model_include_patterns = None
@@ -336,6 +443,11 @@ class DispatchDaemon(Scheduler):
     
         return run_dir
     
+    def _compose_path(self,params, equiv='-', sep='/', order=False,format=None,numDecimals=3):
+        run_base_dir = Path(self.run_base_dir)
+        tail_path = Path(meta.compose(params,equiv, sep, order,format,numDecimals) )
+        return run_base_dir / tail_path
+    
     ##########################
     # Job Managment
     ##########################
@@ -345,6 +457,7 @@ class DispatchDaemon(Scheduler):
                    job_params: Dict = None,
                    job_config_path: Optional[Path] = None,
                    job_id: Optional[str] = None,
+                   nc: Optional[int] = 1,
                    ) -> Dict[str, Any]:
         
         if not run_path and not job_params:
@@ -368,6 +481,7 @@ class DispatchDaemon(Scheduler):
             model_path=model_path,
             run_path=run_path,
             params=job_params,
+            nc=nc,
             model_include_patterns = self.model_include_patterns,
             model_ignore_patterns = self.model_ignore_patterns,
             )
@@ -422,12 +536,13 @@ class DispatchDaemon(Scheduler):
                 job.status = "QUEUED"
                 
     @pyro_expose
-    def kill_job(self, job: str | Job, include_queued: bool = True):
-        return super().kill_job(job, include_queued)
+    def kill_job(self, *args, **kwargs):
+        # Optional pre-processing or logging
+        return super().kill_job(*args, **kwargs)
     
     @pyro_expose
-    def kill_active_jobs(self,include_queued: bool = True):
-        return super().kill_active_jobs(include_queued) 
+    def kill_active_jobs(self, *args, **kwargs):
+        return super().kill_active_jobs( *args, **kwargs) 
     
     @pyro_expose
     def clear_jobs(self, include_queued: bool = False) -> List[Dict[str, Any]]:
@@ -444,10 +559,7 @@ class DispatchDaemon(Scheduler):
             del self.jobs[job_id]
     
         return self.get_jobs()
-                
-    
-        
-    
+
     ##########################
     # exposed getters
     ##########################
@@ -507,8 +619,8 @@ class WarpXDispatchDaemon(DispatchDaemon):
         #### generate run command
         command = []
         if job.nc>1:
-            command.extend(['mpiexec','-x', 'JOB_CONFIG','-np','%i'%job.nc])
-            # command.extend(['mpiexec','-np','%i'%job.nc])
+            #command.extend(['mpiexec','-x', 'JOB_CONFIG','-np','%i'%job.nc])
+            command.extend(['mpiexec','-np','%i'%job.nc])
         # Daemon handles process spawning and command arguments
         command.extend(['python',job.model_path.name])
         
@@ -516,7 +628,7 @@ class WarpXDispatchDaemon(DispatchDaemon):
         job._proc = subprocess.Popen(
             command,
             cwd=run_dir,
-            env=env,
+            # env=env,
             stdout=job._log_file,
             stderr=subprocess.STDOUT,  # Redirect stderr into stdout
             start_new_session=True     # Decouples process group for clean killing
@@ -524,8 +636,10 @@ class WarpXDispatchDaemon(DispatchDaemon):
         job.mark_started()
 
     def _set_run_env(self, job):
-        # default=str converts any non-JSON object (like Path or NumPy types) to a string
-        job_config_json = json.dumps(getattr(job, "params", {}), default=str)
+        params = getattr(job, "parameters", getattr(job, "params", {})).copy()
+        params["_managed"] = True # flag to tell load_job_config JOB_CONFIG is neccessary
+        
+        job_config_json = json.dumps(params, default=str)
         return {**os.environ, "JOB_CONFIG": job_config_json}
     
     
