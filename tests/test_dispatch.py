@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 
-import Pyro5.api
+try:
+    import Pyro5.api
+except ImportError:
+    # No-op decorator if Pyro5 is not installed
+    pass
+
 #from pathlib import Path
 from wxutils.dispatch import WarpXDispatchDaemon
 from pywarpx import picmi
@@ -22,11 +27,12 @@ def test_dispatch(self):
     
 if __name__ == "__main__":
     uri = "PYRO:ProxyDispatch@localhost:44444"
-    #dispatch =  Pyro5.api.Proxy(uri=uri)
+    dispatch =  Pyro5.api.Proxy(uri=uri)
 
-    dispatch = WarpXDispatchDaemon()
+    # dispatch = WarpXDispatchDaemon()
+    dispatch.set_poll_interval(1.0)
     for job_parameter in job_parameters:
-        job_info_local = dispatch.create_job(model_path, job_params=job_parameter)
+        job_info_local = dispatch.create_job(model_path, job_params=job_parameter,nc=2)
     jobs = dispatch.get_jobs()
     job_ids = dispatch.get_ids()
     dispatch.submit_pending()

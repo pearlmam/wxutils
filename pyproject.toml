@@ -44,7 +44,7 @@ geoviz = [
 
 
 [project.scripts]
-warpx-dispatch = "wxutils.dispatch:main"
+warpx-dispatch = "wxutils.dispatch.dispatch:main"
 
 
 [project.urls]
