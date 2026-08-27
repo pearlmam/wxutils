@@ -2,6 +2,7 @@
 
 import sys
 import json
+
 from pywarpx.LoadThirdParty import load_cupy
 from pywarpx import picmi
 constants = picmi.constants
@@ -85,7 +86,6 @@ def get_xp(xp=None):
 
 
 MAX_LEN = 10  # Max elements before truncating lists or arrays
-
 def sanitize(val):
     # Handle NumPy arrays
     if isinstance(val, np.ndarray):
@@ -127,5 +127,3 @@ def save_pywarpx_inputs(filename='pywarpx_used_inputs.json'):
 
     with open(filename, "w") as f:
         json.dump(state, f, indent=4)
-
-

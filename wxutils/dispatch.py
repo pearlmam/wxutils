@@ -23,6 +23,7 @@ import signal
 import shutil
 import dmanage.metadata.metastring as meta
 from abc import ABC, abstractmethod
+import inspect
 
 defaultPyroDispatchHost = "localhost"
 defaultPyroDispatchPort = 44444
@@ -45,6 +46,22 @@ def check_path(path):
         file_path=None
     return dir_path, file_path
 
+def load_job_config(inject_globals: bool = True) -> dict:
+    """Loads JSON job configuration from the JOB_CONFIG environment variable.
+    
+    If inject_globals is True, injected keys become module-level global variables
+    in the calling script. Returns the parsed configuration dictionary.
+    """
+    config_raw = os.environ.get("JOB_CONFIG", "{}")
+    config = json.loads(config_raw)
+
+    if inject_globals:
+        # Step back one frame to access the caller's global scope
+        caller_globals = inspect.currentframe().f_back.f_globals
+        caller_globals.update(config)
+
+    return config
+
 strftime = '%Y-%m-%d %H:%M:%S'
 
 @dataclass
@@ -52,7 +69,7 @@ class Job:
     job_id: str
     model_path: Path
     run_path: Path
-    parameters: Dict[str, Any] = field(default_factory=dict)
+    params: Dict[str, Any] = field(default_factory=dict)
     config_path: Optional[Path] = None
     nc: Optional[int] = 1
     status: str = "PENDING"
@@ -60,6 +77,7 @@ class Job:
     end_time: Optional[float] = None
     model_include_patterns: Optional[List[str]] = None
     model_ignore_patterns: List[str] = field(default_factory=lambda: ["__pycache__", "*.pyc", "*.log", ".git","*.h5"])
+    retry_count: int = 0
     
     _proc: Optional[subprocess.Popen] = field(default=None, repr=False)
     _log_file: Optional[TextIO] = field(default=None, repr=False)
@@ -111,7 +129,7 @@ class Job:
         if path.exists() and path.suffix == ".json":
             with open(path, "r") as f:
                 params = json.load(f)
-        return cls(job_id=job_id, config_path=config_path, parameters=params)
+        return cls(job_id=job_id, config_path=config_path, params=params)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes the job state into a JSON-friendly dict for RPC responses."""
@@ -122,7 +140,7 @@ class Job:
             "job_id": self.job_id,
             "model_path": str(self.model_path.resolve()),
             "run_path": str(self.run_path.resolve()),
-            "parameters": self.parameters,
+            "params": self.params,
             "nc": self.nc,
             "status": self.status,
             "start_time": start_time,
@@ -143,6 +161,7 @@ class Scheduler(ABC):
         # Start background monitoring thread
         self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
         self._monitor_thread.start()
+        self.max_retries = 3
     
     @abstractmethod 
     def _start_job(self, job: Job) -> None:
@@ -160,31 +179,54 @@ class Scheduler(ABC):
             
             time.sleep(self.poll_interval)
         
-    def _poll_job(self, job):
-        if job.status == "RUNNING" and job._proc:
-            retcode = job._proc.poll()
-            if retcode is not None:
-                job.exit_code = retcode
-                job.end_time = time.time()
-                job.status = "COMPLETED" if retcode == 0 else "FAILED"
-                self._cleanup_job_handles(job)
-        return job.to_dict()
-    
+    def _poll_job(self, job: Job) -> Dict[str, Any]:
+       """Polls an active process, updates status on completion, and cleans up handles."""
+       if job.status == "RUNNING" and job._proc:
+           retcode = job._proc.poll()
+           if retcode is not None:
+               job.exit_code = retcode
+               job.mark_finished("COMPLETED" if retcode == 0 else "FAILED")
+               self._cleanup_job_handles(job)
+       return job.to_dict()
+
     def _update_job_statuses(self) -> None:
-        """Polls all active jobs to update status and free finished slots."""
-        for job in list(self.jobs.values()):
-            self._poll_job(job)
-                    
-    def _process_queue(self) -> None:
-        """Launches queued jobs if slot capacity allows."""
+        """Updates status for all currently running jobs via _poll_job."""
         running_jobs = [j for j in self.jobs.values() if j.status == "RUNNING"]
-        pending_jobs = [j for j in self.jobs.values() if j.status == "QUEUED"]
-
+        for job in running_jobs:
+            try:
+                self._poll_job(job)
+            except Exception as e:
+                print(f"Error polling status for active job '{job.job_id}': {e}")
+                job.mark_finished("FAILED")
+                job.exit_code = -1
+                self._cleanup_job_handles(job)
+    
+    def _process_queue(self) -> None:
+        """Launches queued jobs up to max slots with launch retry tracking."""
+        running_jobs = [j for j in self.jobs.values() if j.status == "RUNNING"]
+        queued_jobs = [j for j in self.jobs.values() if j.status == "QUEUED"]
         available_slots = self.max_concurrent_jobs - len(running_jobs)
-
-        # Launch pending jobs up to the concurrency limit
-        for job in pending_jobs[:available_slots]:
-            self._start_job(job)
+    
+        for job in queued_jobs[:available_slots]:
+            try:
+                self._start_job(job)
+            except Exception as e:
+                job.retry_count += 1
+                self._cleanup_job_handles(job)
+    
+                if job.retry_count <= self.max_retries:
+                    print(
+                        f"Warning: Launch failed for job '{job.job_id}' "
+                        f"({job.retry_count}/{self.max_retries}). Retrying... Error: {e}"
+                    )
+                else:
+                    print(
+                        f"Failed to launch job '{job.job_id}' after "
+                        f"{self.max_retries} attempts: {e}"
+                    )
+                    job.mark_finished("FAILED")
+                    job.exit_code = -1
+            
             
     def _cleanup_job_handles(self, job: Job) -> None:
         if job._log_file and not job._log_file.closed:
@@ -195,9 +237,9 @@ class Scheduler(ABC):
         """Generates a short, unique ID (e.g., job_a1b2c3d4)."""
         return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
-    def _compose_path(self,parameters, equiv='-', sep='/', order=False,format=None,numDecimals=3):
+    def _compose_path(self,params, equiv='-', sep='/', order=False,format=None,numDecimals=3):
         run_base_dir = Path(self.run_base_dir)
-        tail_path = Path(meta.compose(parameters,equiv, sep, order,format,numDecimals) )
+        tail_path = Path(meta.compose(params,equiv, sep, order,format,numDecimals) )
         return run_base_dir / tail_path
     
     ###########################
@@ -300,17 +342,17 @@ class DispatchDaemon(Scheduler):
     @pyro_expose
     def create_job(self, model_path: str,
                    run_path: str = None,
-                   job_parameters: Dict = None,
+                   job_params: Dict = None,
                    job_config_path: Optional[Path] = None,
                    job_id: Optional[str] = None,
                    ) -> Dict[str, Any]:
         
-        if not run_path and not job_parameters:
-            raise TypeError("Either 'run_path' or 'job_parameters' must be defined")
-        elif run_path and job_parameters:
+        if not run_path and not job_params:
+            raise TypeError("Either 'run_path' or 'job_params' must be defined")
+        elif run_path and job_params:
             pass
-        elif job_parameters:
-            run_path = self._compose_path(job_parameters)
+        elif job_params:
+            run_path = self._compose_path(job_params)
         
         
         """Creates a job using an optional custom ID or an auto-generated UUID."""
@@ -325,7 +367,7 @@ class DispatchDaemon(Scheduler):
             job_id = actual_id, 
             model_path=model_path,
             run_path=run_path,
-            parameters=job_parameters,
+            params=job_params,
             model_include_patterns = self.model_include_patterns,
             model_ignore_patterns = self.model_ignore_patterns,
             )
@@ -333,10 +375,10 @@ class DispatchDaemon(Scheduler):
         return job.to_dict()
     
     @pyro_expose
-    def set_job_parameters(
+    def set_job_params(
         self,
         job: str | Job,
-        parameters: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
         nc: Optional[int] = None,
         overwrite: bool = False
     ) -> Dict[str, Any]:
@@ -355,11 +397,11 @@ class DispatchDaemon(Scheduler):
             job.nc = nc
     
         # Update or overwrite parameters dictionary
-        if parameters is not None:
+        if params is not None:
             if overwrite:
-                job.parameters = dict(parameters)
+                job.params = dict(params)
             else:
-                job.parameters.update(parameters)
+                job.params.update(params)
     
         return job.to_dict()
     
@@ -461,10 +503,12 @@ class WarpXDispatchDaemon(DispatchDaemon):
         job.log_path.parent.mkdir(parents=True, exist_ok=True)
         job._log_file = open(job.log_path, "w")
         
+        env = self._set_run_env(job)
         #### generate run command
         command = []
         if job.nc>1:
-            command.extend(['mpiexec','-np','%i'%job.nc])
+            command.extend(['mpiexec','-x', 'JOB_CONFIG','-np','%i'%job.nc])
+            # command.extend(['mpiexec','-np','%i'%job.nc])
         # Daemon handles process spawning and command arguments
         command.extend(['python',job.model_path.name])
         
@@ -472,11 +516,20 @@ class WarpXDispatchDaemon(DispatchDaemon):
         job._proc = subprocess.Popen(
             command,
             cwd=run_dir,
+            env=env,
             stdout=job._log_file,
             stderr=subprocess.STDOUT,  # Redirect stderr into stdout
             start_new_session=True     # Decouples process group for clean killing
             )
         job.mark_started()
+
+    def _set_run_env(self, job):
+        # default=str converts any non-JSON object (like Path or NumPy types) to a string
+        job_config_json = json.dumps(getattr(job, "params", {}), default=str)
+        return {**os.environ, "JOB_CONFIG": job_config_json}
+    
+    
+    
     
 
 def main(args=None):
