@@ -18,19 +18,16 @@ def test_dispatch(self):
     
 if __name__ == "__main__":
     uri = "PYRO:ProxyDispatch@localhost:44444"
-    #dispatch =  Pyro5.api.Proxy(uri=uri)
+    dispatch =  Pyro5.api.Proxy(uri=uri)
 
-    dispatch = WarpXDispatchDaemon()
+    #dispatch = WarpXDispatchDaemon()
     for job_parameter in job_parameters:
         job_info_local = dispatch.create_job(model_path, job_parameters=job_parameter)
     jobs = dispatch.get_jobs()
     job_ids = dispatch.get_ids()
-    dispatch._spawn_run_dir(list(dispatch.jobs.values())[0])
-    # for job_id in job_ids:
-    #     dispatch.submit_job(job_id,nc=2)
-    # jobs = dispatch.get_jobs()
-    
-    # status = dispatch.poll_job(job_ids[1])
+    dispatch.submit_pending()
+    jobs = dispatch.get_jobs()
+
     
     
     

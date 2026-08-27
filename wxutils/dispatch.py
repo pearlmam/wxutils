@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
+
+# optional dependacy for enabling rpc use with the script
 try:
     import Pyro5.api
-    #from Pyro5.server import is_private_attribute
-    import Pyro5.serializers
+    pyro_expose = Pyro5.api.expose
 except ImportError:
-    raise ImportError("Module 'Pyro5' must be installed to use the rpc package, use 'pip install dmanage[Pyro5]'")
+    # No-op decorator if Pyro5 is not installed
+    def pyro_expose(obj):
+        return obj
 
 import threading
 import uuid
@@ -19,6 +22,7 @@ import os
 import signal
 import shutil
 import dmanage.metadata.metastring as meta
+from abc import ABC, abstractmethod
 
 defaultPyroDispatchHost = "localhost"
 defaultPyroDispatchPort = 44444
@@ -125,9 +129,9 @@ class Job:
             "end_time": end_time,
             "elapsed_time": self.elapsed_time,
         }
-
-
-class Scheduler:
+    
+@pyro_expose
+class Scheduler(ABC):
     def __init__(self, max_concurrent_jobs: int = 2, poll_interval: float = 1.0):
         self.jobs: Dict[str, Job] = {}
         self.max_concurrent_jobs = max_concurrent_jobs
@@ -140,11 +144,11 @@ class Scheduler:
         self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
         self._monitor_thread.start()
     
-
-    def _start_job(self, job_id: str, nc: [int] = None) -> Dict[str, Any]:
-        """RPC endpoint to launch the simulation process."""
-        raise NotImplementedError("start_job must be set by child.")
-        
+    @abstractmethod 
+    def _start_job(self, job: Job) -> None:
+        """Child classes MUST implement this method to handle process execution."""
+        pass
+    
     def _scheduler_loop(self) -> None:
         """Background loop: polls active jobs and launches pending ones."""
         while self._running:
@@ -182,8 +186,96 @@ class Scheduler:
         for job in pending_jobs[:available_slots]:
             self._start_job(job)
             
+    def _cleanup_job_handles(self, job: Job) -> None:
+        if job._log_file and not job._log_file.closed:
+            job._log_file.close()
+        job._proc = None
+        
+    def _generate_job_id(self, prefix: str = "job") -> str:
+        """Generates a short, unique ID (e.g., job_a1b2c3d4)."""
+        return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+    def _compose_path(self,parameters, equiv='-', sep='/', order=False,format=None,numDecimals=3):
+        run_base_dir = Path(self.run_base_dir)
+        tail_path = Path(meta.compose(parameters,equiv, sep, order,format,numDecimals) )
+        return run_base_dir / tail_path
+    
+    ###########################
+    # process managment
+    ###########################
+    
+    @pyro_expose
+    def kill_job(self, job: str | Job, include_queued: bool = True):
+        job = self.jobs[job] if isinstance(job, str) else job
+        if job.status == "RUNNING" and job._proc:
+            # Terminate the process group (parent mpiexec + worker threads)
+            os.killpg(os.getpgid(job._proc.pid), signal.SIGTERM)
+            job._proc.wait()
+            job.mark_finished("KILLED")
+            self._cleanup_job_handles(job)
+        if job.status == "QUEUED" and include_queued:
+            job.mark_finished("KILLED")
+    @pyro_expose        
+    def kill_active_jobs(self,include_queued: bool = True):
+        for job in self.jobs.values():
+            self.kill_job(job,include_queued)
             
-    def _spawn_run_dir(self, job: Job) -> Path:
+    ###########################
+    # scheduler managment
+    ###########################
+    @pyro_expose
+    def status_scheduler(self):
+        return self._monitor_thread.is_alive()
+    
+    @pyro_expose
+    def start_scheduler(self):
+        if self.status_scheduler():
+            print("Scheduler is already started")
+        else:
+            self._running = True
+            self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+            self._monitor_thread.start()
+        return self.status_scheduler()
+    
+    @pyro_expose
+    def stop_scheduler(self, timeout=5.0):
+        self._running = False
+        start_time = time.time()
+        
+        while self.status_scheduler():
+            if time.time() - start_time > timeout:
+                break
+            time.sleep(0.1)
+        return self.status_scheduler()
+    
+    @pyro_expose    
+    def restart_schedular(self):
+        self.stop_scheduler()
+        self.start_scheduler()
+        return self.status_scheduler()
+    
+    @pyro_expose
+    def set_poll_interval(self,poll_interval):
+        self.poll_interval = poll_interval
+
+
+@pyro_expose
+class DispatchDaemon(Scheduler):
+    def __init__(self,run_base_dir=None,max_concurrent_jobs = 2, poll_interval = 1.0):
+        super().__init__(max_concurrent_jobs, poll_interval)
+        
+        self.model_include_patterns = None
+        self.model_ignore_patterns = ["__pycache__", "*.pyc", "*.log", ".git","*.h5","*.png"]
+        defualt_base_dir = Path.home() / "Documents" / "data"
+        self.run_base_dir = Path(run_base_dir) if run_base_dir else defualt_base_dir
+        
+    @abstractmethod 
+    def _start_job(self, job: Job) -> None:
+        """Child classes MUST implement this method to handle process execution."""
+        pass
+    
+    def _spawn_run_dir(self, job: str | Job, include_queued: bool = True) -> Path:
+        job = self.jobs[job] if isinstance(job, str) else job
         source_dir,_ =  job.check_model_path()
         job.check_run_path()
         run_dir = job.run_path
@@ -201,37 +293,11 @@ class Scheduler:
             shutil.copytree(source_dir, run_dir, dirs_exist_ok=True, ignore=ignore_func)
     
         return run_dir
-        
-    def _cleanup_job_handles(self, job: Job) -> None:
-        if job._log_file and not job._log_file.closed:
-            job._log_file.close()
-        job._proc = None
-        
-    def _generate_job_id(self, prefix: str = "job") -> str:
-        """Generates a short, unique ID (e.g., job_a1b2c3d4)."""
-        return f"{prefix}_{uuid.uuid4().hex[:8]}"
-
-    def _compose_path(self,parameters, equiv='-', sep='/', order=False,format=None,numDecimals=3):
-        run_base_dir = Path(self.run_base_dir)
-        tail_path = Path(meta.compose(parameters,equiv, sep, order,format,numDecimals) )
-        return run_base_dir / tail_path
-
-
-@Pyro5.api.expose
-class DispatchDaemon(Scheduler):
-    def __init__(self,run_base_dir=None,max_concurrent_jobs = 2, poll_interval = 1.0):
-        super().__init__(max_concurrent_jobs, poll_interval)
-        
-        self.model_include_patterns = None
-        self.model_ignore_patterns = ["__pycache__", "*.pyc", "*.log", ".git","*.h5","*.png"]
-        defualt_base_dir = Path.home() / "Documents" / "data"
-        self.run_base_dir = Path(run_base_dir) if run_base_dir else defualt_base_dir
     
-    def _start_job(self, job):
-        """RPC endpoint to launch the simulation process."""
-        raise NotImplementedError("start_job must be set by child.")
-    
-    @Pyro5.api.expose
+    ##########################
+    # Job Managment
+    ##########################
+    @pyro_expose
     def create_job(self, model_path: str,
                    run_path: str = None,
                    job_parameters: Dict = None,
@@ -241,9 +307,9 @@ class DispatchDaemon(Scheduler):
         
         if not run_path and not job_parameters:
             raise TypeError("Either 'run_path' or 'job_parameters' must be defined")
-        if run_path and job_parameters:
+        elif run_path and job_parameters:
             pass
-        if job_parameters:
+        elif job_parameters:
             run_path = self._compose_path(job_parameters)
         
         
@@ -266,72 +332,120 @@ class DispatchDaemon(Scheduler):
         self.jobs[actual_id] = job
         return job.to_dict()
     
-    @Pyro5.api.expose
-    def submit_job(self, job_id: str, nc: [int] = None):
-        job = self.jobs.get(job_id)
+    @pyro_expose
+    def set_job_parameters(
+        self,
+        job: str | Job,
+        parameters: Optional[Dict[str, Any]] = None,
+        nc: Optional[int] = None,
+        overwrite: bool = False
+    ) -> Dict[str, Any]:
+        """Updates job parameters and core count.
         
+        By default (overwrite=False), new parameters are merged into existing ones.
+        Set overwrite=True to wipe existing parameters and replace them completely.
+        """
+        job = self.jobs[job] if isinstance(job, str) else job
+    
+        if job.status in ("RUNNING", "COMPLETED", "FAILED", "KILLED"):
+            raise ValueError(f"Cannot modify parameters for job in '{job.status}' state.")
+    
+        # Update core count if provided
+        if nc is not None:
+            job.nc = nc
+    
+        # Update or overwrite parameters dictionary
+        if parameters is not None:
+            if overwrite:
+                job.parameters = dict(parameters)
+            else:
+                job.parameters.update(parameters)
+    
+        return job.to_dict()
+    
+    @pyro_expose
+    def submit_job(self, job: str | Job, nc: [int] = None):
+        job = self.jobs[job] if isinstance(job, str) else job
         #### check for issues
         if not job:
-            raise ValueError(f"Job {job_id} not found.")
+            raise ValueError(f"Job {job} not found.")
         if nc:
             job.nc = nc
         job.status = "QUEUED"
         
-    @Pyro5.api.expose
+    @pyro_expose
     def submit_pending(self):
         for job in self.jobs.values():
             if job.status == "PENDING":
                 job.status = "QUEUED"
+                
+    @pyro_expose
+    def kill_job(self, job: str | Job, include_queued: bool = True):
+        return super().kill_job(job, include_queued)
+    
+    @pyro_expose
+    def kill_active_jobs(self,include_queued: bool = True):
+        return super().kill_active_jobs(include_queued) 
+    
+    @pyro_expose
+    def clear_jobs(self, include_queued: bool = False) -> List[Dict[str, Any]]:
+        """Removes finished jobs (and optionally queued/pending jobs) from memory."""
+        self._update_job_statuses()
+    
+        keys_to_remove = [
+            job_id for job_id, job in self.jobs.items()
+            if job.status in ("COMPLETED", "FAILED", "KILLED")
+            or (include_queued and job.status in ("PENDING", "QUEUED"))
+        ]
+    
+        for job_id in keys_to_remove:
+            del self.jobs[job_id]
+    
+        return self.get_jobs()
+                
+    
         
-    @Pyro5.api.expose
-    def kill_job(self, job_id: str) -> Dict[str, Any]:
-        job = self.jobs[job_id]
-        if job.status == "RUNNING" and job._proc:
-            # Terminate the process group (parent mpiexec + worker threads)
-            os.killpg(os.getpgid(job._proc.pid), signal.SIGTERM)
-            job._proc.wait()
-            job.mark_finished("KILLED")
-            self._cleanup_job_handles(job)
-            
-        return job.to_dict()
     
     ##########################
-    # exposed setters
+    # exposed getters
     ##########################
-    @Pyro5.api.expose
+    @pyro_expose
     def get_jobs(self):
         output = []
         for job in self.jobs.values():
             output.append(job.to_dict())
         return output
     
-    @Pyro5.api.expose
+    @pyro_expose
     def get_run_paths(self):
         output = []
         for job in self.jobs.values():
             output.append(str(job.run_path))
         return output 
     
-    @Pyro5.api.expose
+    @pyro_expose
     def get_ids(self):
         output = []
         for job in self.jobs.values():
             output.append(str(job.job_id))
         return output 
     
+    @pyro_expose
+    def get_run_base_dir(self):
+        return self.run_base_dir
     
     ##########################
     # exposed setters
     ##########################
     
-    @Pyro5.api.expose
+    @pyro_expose
     def set_run_base_dir(self,run_base_dir):
         self.run_base_dir = run_base_dir
 
     
   
     
-@Pyro5.api.expose
+@pyro_expose
 class WarpXDispatchDaemon(DispatchDaemon):
     def __init__(self,run_base_dir = None, max_concurrent_jobs: int = 2, poll_interval: float = 1.0):
         super().__init__(run_base_dir,max_concurrent_jobs, poll_interval)
@@ -366,15 +480,29 @@ class WarpXDispatchDaemon(DispatchDaemon):
     
 
 def main(args=None):
+    import sys
     from argparse import ArgumentParser
-    parser = ArgumentParser(description="D-Manage proxy dispatch command line launcher.")
-    parser.add_argument("-n", "--host", dest="host",default='127.0.0.1', help="hostname to bind server on")
-    parser.add_argument("-p", "--port", dest="port", type=int,default=defaultPyroDispatchPort, help="port to bind server on (0=random)")
-    #parser.add_argument("--use_ns", dest="use_ns", type=bool,default=False, help="to use a NameServer or not")
-    options = parser.parse_args(args)
-    Pyro5.api.serve({WarpXDispatchDaemon: defaultPyroDispatchName},host=options.host,
-                    port=options.port, use_ns=False)
+    try:
+        import Pyro5.api
+    except ImportError:
+        print(
+            "Error: 'Pyro5' is required to launch the dispatch daemon CLI.\n"
+            "Please install it using: pip install Pyro5 (or pip install .[pyro])",
+            file=sys.stderr
+        )
+        sys.exit(1)
     
+    parser = ArgumentParser(description="D-Manage proxy dispatch command line launcher.")
+    parser.add_argument("-n", "--host", dest="host", default='127.0.0.1', help="hostname to bind server on")
+    parser.add_argument("-p", "--port", dest="port", type=int, default=defaultPyroDispatchPort, help="port to bind server on (0=random)")
+    options = parser.parse_args(args)
+
+    Pyro5.api.serve(
+        {WarpXDispatchDaemon: defaultPyroDispatchName},
+        host=options.host,
+        port=options.port,
+        use_ns=False
+    )
+
 if __name__ == "__main__":
     main()
-    
