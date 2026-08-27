@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-import shutil
-
+import sys
+import json
 from pywarpx.LoadThirdParty import load_cupy
 from pywarpx import picmi
 constants = picmi.constants
@@ -28,8 +28,7 @@ def to_cpu(arr):
 def delete_diagnostics(root_dir='./diags', ignore_list=[]):
     if mpit.get_rank() == 0:
         rmtree_except_patterns(root_dir,ignore_list)
-
-
+        
 def rmtree_except_patterns(root_dir, ignore_list=[],remove_empty=True):
     # Must use topdown=True to modify dirnames in-place and skip directories
     for dirpath, dirnames, filenames in os.walk(root_dir, topdown=True):
@@ -83,3 +82,50 @@ def get_xp(xp=None):
         
     # Default fallback for CPU floats/arrays before WarpX init
     return np
+
+
+MAX_LEN = 10  # Max elements before truncating lists or arrays
+
+def sanitize(val):
+    # Handle NumPy arrays
+    if isinstance(val, np.ndarray):
+        if val.size <= MAX_LEN:
+            return val.tolist()
+        return f"<ndarray shape={val.shape} dtype={val.dtype}>"
+
+    # Handle NumPy scalar types (e.g., np.float64, np.int32)
+    if isinstance(val, (np.number, np.bool_)):
+        return val.item()
+
+    # Handle Lists & Tuples
+    if isinstance(val, (list, tuple)):
+        if len(val) <= MAX_LEN:
+            return [sanitize(x) for x in val]
+        return f"<list len={len(val)} preview={val[:3]}...>"
+
+    # Handle Dicts
+    if isinstance(val, dict):
+        return {k: sanitize(v) for k, v in val.items() if isinstance(k, str)}
+
+    # Native primitive types
+    if isinstance(val, (int, float, str, bool, type(None))):
+        return val
+
+    # Ignore complex objects, functions, modules, etc.
+    return None
+
+def save_pywarpx_inputs(filename='pywarpx_used_inputs.json'):
+    caller_globals = sys._getframe(1).f_globals
+    state = {}
+    for k, v in caller_globals.items():
+        if k.startswith("_") or callable(v):
+            continue
+        
+        clean_val = sanitize(v)
+        if clean_val is not None:
+            state[k] = clean_val
+
+    with open(filename, "w") as f:
+        json.dump(state, f, indent=4)
+
+
