@@ -180,15 +180,17 @@ class BaseScheduler(ABC):
         self.max_retries = 3
 
         self._running = True
-        self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
-        self._monitor_thread.start()
-
+        # self._monitor_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+        # self._monitor_thread.start()
+        self._stop_event = threading.Event()
+        self._start_monitor_thread()
         # Finalizer handles both garbage collection (del) and process exit automatically.
         # No extra atexit registration needed as weakref.finalize handles atexit internally.
         self._finalizer = weakref.finalize(
             self,
             BaseScheduler._finalizer_routine,
             self.jobs,
+            self._stop_event,
             self._monitor_thread
         )
 
@@ -201,16 +203,33 @@ class BaseScheduler(ABC):
         """Child classes MUST implement this method to handle process execution."""
         pass
 
-    def _scheduler_loop(self) -> None:
-        """Background loop: polls active jobs and launches pending ones."""
-        while self._running:
-            try:
-                self._update_job_statuses()
-                self._process_queue()
-            except Exception as e:
-                print(f"Error in scheduler loop: {e}")
+    def _start_monitor_thread(self) -> None:
+        """Starts monitoring thread without keeping a strong reference to self."""
+        weak_self = weakref.ref(self)
+        stop_event = self._stop_event
 
-            time.sleep(self.poll_interval)
+        def _thread_loop():
+            while not stop_event.is_set():
+                inst = weak_self()
+                if inst is None or not inst._running:
+                    break
+
+                poll_interval = inst.poll_interval
+                try:
+                    inst._update_job_statuses()
+                    inst._process_queue()
+                except Exception as e:
+                    print(f"Error in scheduler loop: {e}")
+
+                # 1. CRITICAL: Drop local strong reference BEFORE thread sleeps/waits
+                del inst
+
+                # 2. Wait on event (unblocks instantly when finalizer sets stop_event)
+                if stop_event.wait(timeout=poll_interval):
+                    break
+
+        self._monitor_thread = threading.Thread(target=_thread_loop, daemon=True)
+        self._monitor_thread.start()
 
     def _poll_job(self, job: Any) -> Dict[str, Any]:
         """Polls an active process, updates status on completion, and cleans up handles."""
@@ -280,28 +299,41 @@ class BaseScheduler(ABC):
         job._proc = None
 
     @staticmethod
-    def _cleanup_job_proc(job: Any, force: bool = False, timeout: float = 3.0) -> None:
-        """Kills the OS process group associated with a single job and releases file handles."""
+    def _cleanup_job_proc(job: Any, force: bool = True, timeout: float = 3.0) -> None:
+        """Recursively kills the entire process tree (mpiexec + child python processes)."""
         proc = getattr(job, "_proc", None)
-        
-        if proc and proc.poll() is None:
+        if not proc or proc.poll() is not None:
+            BaseScheduler._cleanup_job_handles(job)
+            return
+
+        # Attempt process tree kill via psutil (handles mpiexec + spawned workers)
+        try:
+            import psutil
+            parent = psutil.Process(proc.pid)
+            children = parent.children(recursive=True)
+
+            for child in children:
+                if force:
+                    child.kill()
+                else:
+                    child.terminate()
+
+            if force:
+                parent.kill()
+            else:
+                parent.terminate()
+
+        except ImportError:
+            # Fallback to OS process group kill if psutil isn't installed
             try:
                 pgid = os.getpgid(proc.pid)
-                if force:
-                    os.killpg(pgid, signal.SIGKILL)
-                    proc.wait(timeout=1.0)
-                else:
-                    os.killpg(pgid, signal.SIGTERM)
-                    try:
-                        proc.wait(timeout=timeout)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(pgid, signal.SIGKILL)
-                        proc.wait(timeout=1.0)
+                os.killpg(pgid, signal.SIGKILL if force else signal.SIGTERM)
             except (ProcessLookupError, OSError):
                 pass
-    
-        # Ensure log handles are closed and flushed regardless of exit state
-        BaseScheduler._cleanup_job_handles(job)
+        except Exception:
+            pass
+        finally:
+            BaseScheduler._cleanup_job_handles(job)
 
     @staticmethod
     def _cleanup_all_procs(jobs: dict, force: bool = True) -> None:
@@ -310,13 +342,14 @@ class BaseScheduler(ABC):
             BaseScheduler._cleanup_job_proc(job, force=force)
 
     @staticmethod
-    def _finalizer_routine(jobs: dict, thread: Any) -> None:
+    def _finalizer_routine(jobs: dict, stop_event: threading.Event, thread: threading.Thread) -> None:
         """Static callback executed by weakref.finalize on del or process exit."""
-        BaseScheduler._cleanup_all_procs(jobs, force=True)
+        BaseScheduler._cleanup_all_procs(jobs, force=False)
+        if stop_event:
+            stop_event.set()
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
             
-    def __del__(self):
         
 
 
