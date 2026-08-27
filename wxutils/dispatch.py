@@ -648,20 +648,20 @@ class WarpXDispatchDaemon(DispatchDaemon):
         job.log_path.parent.mkdir(parents=True, exist_ok=True)
         job._log_file = open(job.log_path, "w")
         
-        env = self._set_run_env(job)
+        
         #### generate run command
         command = []
         if job.nc>1:
-            #command.extend(['mpiexec','-x', 'JOB_CONFIG','-np','%i'%job.nc])
+            # command.extend(['mpiexec','-x', 'JOB_CONFIG','-np','%i'%job.nc])
             command.extend(['mpiexec','-np','%i'%job.nc])
-        # Daemon handles process spawning and command arguments
         command.extend(['python',job.model_path.name])
         
         #### run job
+        env = self._set_run_env(job)   # to pass arguments to simulation
         job._proc = subprocess.Popen(
             command,
             cwd=run_dir,
-            # env=env,
+            env=env,
             stdout=job._log_file,
             stderr=subprocess.STDOUT,  # Redirect stderr into stdout
             start_new_session=True     # Decouples process group for clean killing
