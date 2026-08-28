@@ -38,11 +38,12 @@ class CallbackBase(Setup):
     def grid_info(self):
         if not hasattr(self,'sim'):
             raise AttributeError(f"class {self.__class__.__name__} must be run pre_initialize() before grid_info() can be called.")
+        xp = getattr(self,'xp',np)
         self.dims = self.sim.solver.grid.number_of_dimensions
-        self.number_of_cells = list(self.sim.solver.grid.number_of_cells)
-        self.lower_bound = list(self.sim.solver.grid.lower_bound)
-        self.upper_bound = list(self.sim.solver.grid.upper_bound)
-        self.dxyz = list(self.xp.array((self.xp.array(self.upper_bound)-self.xp.array(self.lower_bound))/self.xp.array(self.number_of_cells)))
+        self.number_of_cells = self.sim.solver.grid.number_of_cells
+        self.lower_bound = self.sim.solver.grid.lower_bound
+        self.upper_bound = self.sim.solver.grid.upper_bound
+        self.dxyz = xp.array((xp.array(self.upper_bound)-xp.array(self.lower_bound))/xp.array(self.number_of_cells))
         self.axis_labels = get_warpx_axis_labels(self.dims)
         
     def concat(self, list_of_arrays,*args,**kwargs):
