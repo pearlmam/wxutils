@@ -127,3 +127,19 @@ def save_pywarpx_inputs(filename='pywarpx_used_inputs.json'):
 
     with open(filename, "w") as f:
         json.dump(state, f, indent=4)
+
+def get_warpx_axis_labels(dims):
+    dims = str(dims)
+    mapping = {
+        "3": ["x", "y", "z"],
+        "2": ["x", "z"],
+        "RZ": ["r", "z"],
+        "1": ["z"],
+        }
+
+    if dims in mapping:
+        return mapping[dims]
+    raise ValueError(f"Unsupported WarpX geometry dimension: {dims}")
+    
+if __name__ == "__main__":
+    get_warpx_axis_labels(2)

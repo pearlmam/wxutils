@@ -6,11 +6,27 @@ import numpy as np
 from importlib.metadata import version
 from pywarpx.LoadThirdParty import load_cupy
 import wxutils.mpitools as mpit
+import openpmd_api as opmd
+import getpass
+from pywarpx import callbacks
+
+saveloc = Path('./diags/fields')
+
 
 class DiagnosticBase:
-    def __init__(self):
+    def __init__(self, path):
         self.xp, _ = load_cupy()
-
+        self.path = Path(path)
+        
+    def grid_info(self):
+        if not hasattr(self,'sim'):
+            raise AttributeError(f"class {self.__class__.__name__} must be run pre_initialize() before grid_info() can be called.")
+        self.dims = self.sim.solver.grid.number_of_dimensions
+        self.number_of_cells = self.sim.solver.grid.number_of_cells
+        self.lower_bound = self.sim.solver.grid.lower_bound
+        self.upper_bound = self.sim.solver.grid.upper_bound
+        self.dxyz = self.xp.array((self.xp.array(self.upper_bound)-self.xp.array(self.lower_bound))/self.xp.array(self.number_of_cells))
+        
 class Diagnostic1D(DiagnosticBase):
     def __init__(self, path,nsteps=None, interval=None, filetype="h5", datatype=None,reduce_op=None):
         self.xp, _ = load_cupy()
@@ -130,30 +146,106 @@ class Diagnostic1D(DiagnosticBase):
     def on_exit(self):
         self.save()
         
-        
-class DiagnosticField(DiagnosticBase):
-    def __init__(self,backend):
-        self.backend=backend
-        
     
 def save_to_npy(field,path,suffix=None):
     global_data = field[...]   # this does an mpi gather on all ranks
     if mpit.get_rank() == 0:
         np.save(path, global_data)
 
-def save_to_plotfile(field,path,suffix=None):
-    raise NotImplementedError(f"save_to_plotfile not implemented")
+
+class Diagnostic2D(DiagnosticBase):
+    def __init__(self, name,period,path=None):
+        
+        self.suffix_format = "%06T"
+        self.path = saveloc /Path(name) /f"openpmd_{self.suffix_format}.bp5"
+        self.name = name
+        self.period = period
+        self.lev = 0
+        
+        
+        
+    def pre_initialize(self,sim):
+        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
+        callbacks.installafterstep(self.save)
+        callbacks.installcallback("onbreaksignal",self.close)
+        self.sim = sim
+        self.series = opmd.Series(self.path, opmd.Access.create)
+        self.series.author = getpass.getuser()
+        self.series.set_attribute("dependencies", f"{self.series.software} {self.series.software_version}")
+        self.series.set_software('wxutils',version("wxutils"))
     
-def save_to_h5(field,name='var',path='./',suffix=None):
-    raise NotImplementedError(f"save_to_h5 not implemented")
-    global_shape = field.shape
-    local_data = field[...]
-    local_slice = None
-    comm = mpit.get_comm()
-    with h5py.File(path, "w", driver="mpio", comm=comm) as f:
-        # Set global dataset shape and write rank-specific slices
-        dset = f.create_dataset(name, shape=global_shape, dtype=local_data.dtype)
-        dset[local_slice] = local_data
+    def post_initialize(self):
+        self.xp, _ = load_cupy()
+        self.grid_info()
+        self.field_data = self.sim.fields.get(self.name,level=self.lev)
+        os.makedirs(self.path.parent,exist_ok=True)
+        with open(self.path.parent/"paraview.pmd", "w") as f:
+            f.write(f"openpmd_{self.suffix_format}.bp5\n")
+        
+    def save(self):
+        step = self.sim.extension.warpx.getistep(self.lev)
+        if step % self.period == 0:
+            data = self.field_data[...]
+            shape = list(data.shape)
+            # shape.append(1)
+            data = data.reshape(shape[0], 1, shape[1])
+            shape = data.shape
+            step = self.sim.extension.warpx.getistep(self.lev)
+            t = self.sim.extension.warpx.gett_new(self.lev)
+            
+            it = self.series.iterations[step]
+            #print(dir(it))
+            it.set_time(t)
+            it.set_dt(self.sim.time_step_size)
+            it.set_time_unit_SI(1.0)
+            # it.set_attribute("data_time",t)
+            mesh = it.meshes[self.name]
+            mesh.grid_spacing = [self.dxyz[0],1.0,self.dxyz[1]]
+            mesh.grid_global_offset = [0., 0., 0.]
+            mesh.axis_labels = ["x","y","z"]
+            mesh.data_order = 'C'
+            component = mesh[opmd.Mesh.SCALAR]
+            print(f"dxz={mesh.grid_spacing}, offset = {mesh.grid_global_offset},shape = {data.shape}")
+            component.reset_dataset(opmd.Dataset(data.dtype, shape))
+            component[:, :] = data
+            it.close()
+            self.series.flush()
     
+    def close(self,):
+        self.series.flush()
+        self.series.close()
+        
+        
+        
+def save_to_opmd(field,path,fieldname='field_data',step=0):
+    series = opmd.Series(path, opmd.Access.create)
+    series.author = getpass.getuser()
+    series.set_attribute("dependencies", f"{series.software} {series.software_version}")
+    series.set_software('wxutils',version("wxutils"))
+    
+    it = series.iterations[step]
+    it.time = 0.0
+    
+    
+    
+    mesh = it.meshes[fieldname]
+    component = mesh["var"]
+    dataset = opmd.Dataset(field.dtype, field.shape)
+    component.reset_dataset(dataset)
+    component[:, :] = field
+    series.flush()
+    series.close()
+    
+
+    
+if __name__ == "__main__":
+    
+    data = np.arange(150 * 300,dtype=np.float64).reshape(150, 300)
+    suffix_format = "%05T"
+    path = Path(f"openpmd_{suffix_format}.bp5")
+    fieldname = 'var'
+    save_to_opmd(data,path,fieldname,0)
+    with open(path.parent/"paraview.pmd", "w") as f:
+        f.write(f"openpmd{suffix_format}.bp5")
     
     
