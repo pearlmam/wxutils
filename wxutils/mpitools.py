@@ -11,9 +11,10 @@ class Info():
         self.rank = get_rank()
         self.comm = get_comm()
         self.size = get_size()
-        @property
-        def is_root(self):
-            return self.rank == 0
+        
+    @property
+    def is_root(self):
+        return self.rank == 0
   
 def enabled():
     if mpi is None:
