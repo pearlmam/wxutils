@@ -22,7 +22,7 @@ class InSituMPL():
             self.particles = [particles]
         else:
             self.particles = particles
-        
+        self.fig = None
         
     def pre_initialize(self,sim):
         if mpit.enabled():
@@ -68,3 +68,7 @@ class InSituMPL():
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
         plt.gca().set_aspect('equal')
+        
+    def close(self):
+        if self.fig:
+            self.fig.close()
