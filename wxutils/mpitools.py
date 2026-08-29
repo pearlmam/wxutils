@@ -5,6 +5,16 @@ try:
 except ImportError:
     mpi = None
   
+class Info():
+    def __init__(self):
+        self.enabled = enabled()
+        self.rank = get_rank()
+        self.comm = get_comm()
+        self.size = get_size()
+        @property
+        def is_root(self):
+            return self.rank == 0
+  
 def enabled():
     if mpi is None:
         return False

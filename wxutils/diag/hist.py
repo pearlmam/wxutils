@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
+import numpy as np
 
 from pywarpx import particle_containers, picmi,callbacks,libwarpx
 from wxutils.features.helpers import set_species_params
+
 from pywarpx.LoadThirdParty import load_cupy
-from wxutils.diag.store import Diagnostic1D
 from pathlib import Path
+from .diag import Diagnostic1D
 
 saveloc = Path('./diags/hist')
 
-
-
-
-class CurrentAbs():
-    def __init__(self,species,boundary,name=None,interval=None,nsteps=None):
+class CurrentAbs(Diagnostic1D):
+    def __init__(self,name,species,boundary,io,save_period,**kw):
+        super().__init__(name,io,save_period,**kw)
         if not isinstance(species,(list,tuple,picmi.Species)):
             raise TypeError("paritcles must be a picmi.Species or list-like of picmi.Species")
         elif isinstance(species,(picmi.Species)):
@@ -28,31 +28,23 @@ class CurrentAbs():
         self.speciesList = [set_species_params(_species,self.boundaryList) for _species in self.speciesList]
         self.lev = 0
         
-        if name is None:
-            raise TypeError("path must be defined, will develope generic naming soon")
-        self.path = saveloc /Path(name)
-        self.interval = interval
-        self.nsteps = nsteps
-        
     def pre_initialize(self,sim):
-        self.sim = sim
-        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
-        callbacks.installafterstep(self.get)
+        super().pre_initialize(sim)
         
     def post_initialize(self):
-        self.xp,_ = load_cupy()
-        self.data = self.xp.array([])
-        self.species_pc = [self.sim.particles.get(species.name) for species in self.speciesList]
+        super().post_initialize()
+        self.data = self.xp.zeros((2, self.save_period), dtype=self.xp.float64)
+        # self.species_pc = [self.sim.particles.get(species.name) for species in self.speciesList]
         self.buffer = particle_containers.ParticleBoundaryBufferWrapper()
 
-        if self.interval is None:
+        if self.save_period is None:
             # check for diagnostics and grab that value
             if len(self.sim.diagnostics)>0: 
-                self.interval = self.sim.diagnostics[0].period
-        self.store = Diagnostic1D(self.path,nsteps=self.nsteps,interval=self.interval)
-        
+                self.save_period = self.sim.diagnostics[0].period
+    
+    
     def get(self):
-        
+        '''must return tuple of (value,time), this will get logged'''
         q = 0
         for species in self.speciesList:
             w=0
@@ -64,32 +56,41 @@ class CurrentAbs():
         
         t = self.sim.extension.warpx.gett_new(self.lev)
         dt = self.sim.extension.warpx.getdt(self.lev)
-        self.store.log(q/dt,t)
-        
-        
-    def concat(self, list_of_arrays,*args,**kwargs):
-        if len(list_of_arrays) == 0:
-            # Return a 1d array of size 0
-            return self.xp.empty(0)
-        else:
-            return self.xp.concatenate(list_of_arrays,*args,**kwargs)
+        return q/dt,t
+    
+    def log(self):
+        x0,x1 = self.get()
 
-class DiagnosticBase:
-    def __init__(self, path):
-        self.xp, _ = load_cupy()
-        self.path = Path(path)
+        self.data[0, self.buf_step] = x0
+        self.data[1, self.buf_step] = x1
+        self.buf_step += 1
+        super().log()
+    
+    def save(self):
+        """Collective flush—reduces entire buffered vector across ranks at once."""
+        if self.buf_step == 0:
+            return
+    
+        # 1. Pull active local slice to CPU host memory
+        active_data = self.data
+        if hasattr(active_data, "get"):
+            active_data = active_data.get()
+    
+        # Rows are inherently C-contiguous in memory
+        x1_local = active_data[1]
         
-    def grid_info(self):
-        if not hasattr(self,'sim'):
-            raise AttributeError(f"class {self.__class__.__name__} must be run pre_initialize() before grid_info() can be called.")
-        self.dims = self.sim.solver.grid.number_of_dimensions
-        self.number_of_cells = self.sim.solver.grid.number_of_cells
-        self.lower_bound = self.sim.solver.grid.lower_bound
-        self.upper_bound = self.sim.solver.grid.upper_bound
-        self.dxyz = self.xp.array((self.xp.array(self.upper_bound)-self.xp.array(self.lower_bound))/self.xp.array(self.number_of_cells))
+        # 2. Perform chunked vector reduction across MPI ranks
+        if self.mpii.enabled and self.reduce_op is not None:
+            x1_global = np.empty_like(x1_local) if self.mpi.is_root else None
+            self.mpii.comm.Reduce(x1_local, x1_global, op=self.reduce_op, root=0)
+        else:
+            x1_global = x1_local
+        
+        super().save()
+        self.buf_step = 0
         
         
-class VizSchema1D(IO):
+class VizSchema1D():
     def __init__(self, path,nsteps=None, interval=None, filetype="h5", datatype=None,reduce_op=None):
         self.xp, _ = load_cupy()
 

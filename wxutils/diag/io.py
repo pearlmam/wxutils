@@ -18,19 +18,27 @@ saveloc = Path('./diags/fields')
 class IO():
     def __init__(self,**kw):
         self.path = Path(kw.pop("path","./diags"))
+        self._initialized = False
         
     def pre_initialize(self,sim):
-        # callbacks.installcallback("beforeInitEsolve", self.post_initialize)
-        callbacks.installcallback("onbreaksignal",self.close)
+        if self._initialized:
+            return
+        self.rank = mpit.get_rank()
+        self._install_callbacks()
         self.sim = sim
         self.author = getpass.getuser()
         self.software = "wxutils"
         self.version = version("wxutils")
+        self._initialized = False
+    
+    def _install_callbacks(self,):
+        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
+        callbacks.installcallback("onbreaksignal",self.close)
         
     def post_initialize(self):
         self.xp, _ = load_cupy()
         self.grid_info()
-    
+        
     
     def save(self,data):
         pass
@@ -40,81 +48,79 @@ class IO():
     
     
     
-# class VizSchema1D(IO):
-#     def __init__(self, **kw):
-#         super().__init__(**kw)
-#         self.path = self.path /"history.h5"
-#         self.datasets = []
+class VizSchema1D(IO):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.path = self.path /"history.h5"
+        self.datasets = []
 
-#     def pre_initialize(self,sim):
-#         super().pre_initialize(sim)
+    def pre_initialize(self,sim):
+        super().pre_initialize(sim)
+        self.initialize_file()
         
-#         """Creates or resets the HDF5 file with VizSchema metadata and empty resizable datasets (Rank 0 only)."""
-#         if mpit.get_rank() != 0:
-#             return
-
-#         with h5py.File(str(self.path), "w") as h5f:
-#             mesh_group = h5f.create_group("runInfo")
-#             mesh_group.attrs["software"] = np.bytes_(self.software)
-#             mesh_group.attrs["version"] = np.bytes_(self.version)
-            
-#     def create_dataset(self,name,buf_size,dtype=np.float64):
-#         if name in self.datasets:
-#             raise Exception(f"'{name}' already in history dataset")
-#         self.datasets.append(name)
-#         with h5py.File(str(self.path), "w") as h5f:
-#             timeGroupName = self.get_time_group_name(name)
-#             mesh_group = h5f.create_group(timeGroupName)
-#             mesh_group.attrs["vsType"] = np.bytes_("mesh")
-#             mesh_group.attrs["vsKind"] = np.bytes_("rectilinear")
-#             mesh_group.attrs["vsAxis0"] = np.bytes_("time")
-            
-#             mesh_group.create_dataset(
-#                 "time", 
-#                 shape=(0,), 
-#                 maxshape=(None,), 
-#                 chunks=(buf_size,), 
-#                 dtype=dtype
-#                 )
-            
-#             # Create empty resizable variable dataset
-#             dset_var = h5f.create_dataset(
-#                 name, 
-#                 shape=(0,), 
-#                 maxshape=(None,), 
-#                 chunks=(buf_size,), 
-#                 dtype=dtype
-#                 )
-#             dset_var.attrs["vsType"] = np.bytes_("variable")
-#             dset_var.attrs["vsMesh"] = np.bytes_(timeGroupName)
-    
-#     def get_time_group_name(self,name):
-#         return f"timeSeries{name}"
-    
-#     def save(self,name,data):
-#         """Collective flush—reduces entire buffered vector across ranks at once."""
-#         timeGroupName = self.get_time_group_name(name)
         
-#         if mpit.get_rank() == 0:
-#             n_samples = len(x0_local)
-#             with h5py.File(str(self.path), "a") as h5f:
-#                 dset_time = h5f[f"{timeGroupName}/time"]
-#                 dset_var = h5f[self.name]
+    def initialize_file(self):
+        if self.rank == 0 and not self._initialized:
+            with h5py.File(str(self.path), "w") as h5f:
+                mesh_group = h5f.create_group("runInfo")
+                mesh_group.attrs["software"] = np.bytes_(self.software)
+                mesh_group.attrs["version"] = np.bytes_(self.version)
+            
+    def create_dataset(self,name,buf_size,dtype=np.float64):
+        if name in self.datasets:
+            raise Exception(f"'{name}' already in history dataset")
+        self.datasets.append(name)
+        with h5py.File(str(self.path), "w") as h5f:
+            timeGroupName = self.get_time_group_name(name)
+            mesh_group = h5f.create_group(timeGroupName)
+            mesh_group.attrs["vsType"] = np.bytes_("mesh")
+            mesh_group.attrs["vsKind"] = np.bytes_("rectilinear")
+            mesh_group.attrs["vsAxis0"] = np.bytes_("time")
+            
+            mesh_group.create_dataset(
+                "time", 
+                shape=(0,), 
+                maxshape=(None,), 
+                chunks=(buf_size,), 
+                dtype=dtype
+                )
+            
+            # Create empty resizable variable dataset
+            dset_var = h5f.create_dataset(
+                name, 
+                shape=(0,), 
+                maxshape=(None,), 
+                chunks=(buf_size,), 
+                dtype=dtype
+                )
+            dset_var.attrs["vsType"] = np.bytes_("variable")
+            dset_var.attrs["vsMesh"] = np.bytes_(timeGroupName)
     
-#                 old_size = dset_time.shape[0]
-#                 new_size = old_size + n_samples
+    def get_time_group_name(self,name):
+        return f"timeSeries{name}"
+    
+    def save(self,name,data):
+        """Collective flush—reduces entire buffered vector across ranks at once."""
+        timeGroupName = self.get_time_group_name(name)
+        x0 = data[0]
+        x1 = data[1]
+        if mpit.get_rank() == 0:
+            n_samples = len(x0)
+            with h5py.File(str(self.path), "a") as h5f:
+                dset_time = h5f[f"{timeGroupName}/time"]
+                dset_var = h5f[self.name]
+    
+                old_size = dset_time.shape[0]
+                new_size = old_size + n_samples
                 
-#                 dset_time.resize((new_size,))
-#                 dset_var.resize((new_size,))
+                dset_time.resize((new_size,))
+                dset_var.resize((new_size,))
                 
-#                 dset_time[old_size:new_size] = x0_local
-#                 dset_var[old_size:new_size] = x1_global
+                dset_time[old_size:new_size] = x0
+                dset_var[old_size:new_size] = x1
     
-#         # 4. Reset local buffer index
-#         self.buf_step = 0
-        
-#     def on_exit(self):
-#         self.save()
+    def on_exit(self):
+        self.save()
     
     
         

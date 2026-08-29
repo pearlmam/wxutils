@@ -4,6 +4,7 @@ import numpy as np
 from pywarpx import callbacks
 from pywarpx.LoadThirdParty import load_cupy
 from wxutils.utils import get_warpx_axis_labels
+import wxutils.mpitools as mpit
 
 class Setup:
     def __init__(self, *args, **kwargs):
@@ -30,10 +31,12 @@ class CallbackBase(Setup):
     
     def pre_initialize(self,sim):
         self.sim = sim
+        self._breaksignal = False
         callbacks.installcallback("beforeInitEsolve", self.post_initialize)
         
     def post_initialize(self,):
         self.xp, _ = load_cupy()
+        self.mpii = mpit.Info()
         
     def grid_info(self):
         if not hasattr(self,'sim'):
