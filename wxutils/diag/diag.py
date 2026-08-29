@@ -13,7 +13,7 @@ class DiagnosticBase(CallbackBase):
         self.dtype = kw.pop("dtype",np.float64)
         self.dump_at_step_zero = kw.pop("dump_at_step_zero",True)
         self.log_step = 0
-        self.lev = 1
+        self.lev = 0
         self.data_buffer_length = int(np.ceil(self.save_period/self.log_period))  # TODO, this needs to have a common denominator, no rounding
         
     def pre_initialize(self,sim):

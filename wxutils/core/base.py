@@ -31,12 +31,13 @@ class GridInfo():
         self.upper_bound = sim.solver.grid.upper_bound
         self.dxyz = xp.array((xp.array(self.upper_bound)-xp.array(self.lower_bound))/xp.array(self.number_of_cells))  # should this us xp?
         self.axis_labels = get_warpx_axis_labels(self.dims)
-
+        
 
 class CallbackBase(Setup):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
-    
+        self._initialized = False
+        
     def pre_initialize(self,sim):
         self.sim = sim
         self._breaksignal = False
@@ -45,6 +46,7 @@ class CallbackBase(Setup):
     def post_initialize(self,):
         self.xp, _ = load_cupy()
         self.mpii = mpit.Info()
+        self._initialized = True
 
     def concat(self, list_of_arrays,*args,**kwargs):
         if len(list_of_arrays) == 0:

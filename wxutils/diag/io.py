@@ -38,7 +38,7 @@ class IO():
         
     def post_initialize(self):
         self.xp, _ = load_cupy()
-        #self.grid_info()
+        self._initialized = True
         
     def initialize_file(self):
         raise NotImplementedError("initialize_file is not implemented. Use it to create the data space")
@@ -160,8 +160,9 @@ class OpenPMD(IO):
         pass
             
     def save(self,name,data,grid,lev=0):
+        mpit.mpi_print(f"{self.mpii.is_root}, {self._initialized}",-1)
         if self.mpii.is_root and self._initialized:
-
+            print("writing")
             step = self.sim.extension.warpx.getistep(lev)
             t = self.sim.extension.warpx.gett_new(lev)
             dt = self.sim.time_step_size
