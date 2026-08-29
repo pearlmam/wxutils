@@ -16,7 +16,6 @@ from wxutils.features.helpers import set_species_params
 from wxutils.utils import to_cpu
 from wxutils.core import CallbackBase
 from wxutils.features.deposit import Deposit
-from wxutils.diag.store import Diagnostic1D,save_to_npy
 import wxutils.mpitools as mpit
 
 constants = picmi.constants
@@ -179,16 +178,7 @@ class SecondaryEmission(CallbackBase):
         
     def add_surface_charge(self):
         self.rho.saxpy(1.0, self.rhoSurf, 0, 0, 1, 0)
-        self.save_field(self.rho,"rho_total")
-        self.save_field(self.rhoSurf,"rho_surf")
-    
-    def save_field(self,field,savename):
-        if self.dumprate is not None:
-            i = self.sim.extension.warpx.getistep(0)
-            if i % self.dumprate == 0:
-                path = f"{self.saveloc}/{savename}_{i}.npy"
-                save_to_npy(field,path)
-                
+        
     def get_buffer_data(self, species_name, boundary, variables, lev=0):
         return tuple(
             self.concat(self.buffer.get_particle_scraped_this_step(species_name, boundary, var, lev))
@@ -198,7 +188,7 @@ class SecondaryEmission(CallbackBase):
     def setup_diagnostics(self):
         if self.debug:
             path = saveloc /Path("avgSEY")
-            self.avg_sey = Diagnostic1D(path,interval=self.dumprate,reduce_op="mean")
+            #self.avg_sey = Diagnostic1D(path,interval=self.dumprate,reduce_op="mean")
 
 ###### secondary emission models
 # NOTE: numba is slower than numpy at this point in the hop funnel
