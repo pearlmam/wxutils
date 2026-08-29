@@ -530,10 +530,10 @@ class Deposit(CallbackBase):
                 string += "Lost Particles = %i\n"%(num_lost)
                 #mpit.mpi_print("Lost Particles = %i"%(num_lost))
             if (weights is not None) and (dep_weights is not None) and q:
-                cell_area = np.prod(np.array(self.grid_info.dxyz[:self.grid_info.dims]))
+                cell_area = self.xp.prod(self.xp.array(self.grid_info.dxyz[:self.grid_info.dims]))
                 q_eff = q  / cell_area
                 Qin = weights.sum() * q_eff
-                Qout = np.array([w.sum() for w in dep_weights]).sum() 
+                Qout = self.xp.array([w.sum() for w in dep_weights]).sum() 
                 Qratio = Qout/Qin
                 string += "Qout/Qin = %.10f\n"%(Qratio)
                 # mpit.mpi_print("Qout/Qin = %.3f"%(Qout/Qin))

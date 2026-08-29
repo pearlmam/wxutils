@@ -2,7 +2,7 @@
 
 from pywarpx import picmi
 constants = picmi.constants
-from wxutils.utils import get_xp
+from wxutils.utils import get_xp,rng_normal
 
 def energy_to_velocity(energy_ev,mass=9.1093837139e-31,relativistic=True,xp=None):
     """
@@ -53,10 +53,9 @@ def apply_angular_dist(u_mag, nx, nz, sigma_theta, rng=None,xp=None):
     """
     xp = get_xp(xp)
     if rng is None:
-        rng = xp.random.default_rng()
-        
-    # 1. Sample angular deviations around zero
-    delta_theta = rng.normal(loc=0.0, scale=sigma_theta, size=len(u_mag))
+        delta_theta = xp.random.normal(loc=0.0, scale=sigma_theta, size=len(u_mag))
+    else:
+        delta_theta = rng_normal(rng,loc=0.0, scale=sigma_theta, size=len(u_mag))
     
     # 2. Compute deviation trig terms
     cos_d = xp.cos(delta_theta)

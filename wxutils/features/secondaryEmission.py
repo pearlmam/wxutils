@@ -13,7 +13,7 @@ from pywarpx.LoadThirdParty import load_cupy
 from wxutils.ops.physics import energy_to_velocity, apply_angular_dist
 from wxutils.features.helpers import set_species_params
 # from wxutils.debug import check_array
-from wxutils.utils import to_cpu
+from wxutils.utils import to_cpu, rng_normal
 from wxutils.core import CallbackBase
 from wxutils.features.deposit import Deposit
 import wxutils.mpitools as mpit
@@ -131,7 +131,7 @@ class SecondaryEmission(CallbackBase):
         wSec = w*nSec
         I = (wSec>self.wThresh)
         wSec = to_cpu(wSec[I])
-        eng_emit = self.rng.normal(self.sec_emit_energy, self.sigma_energy, len(wSec))
+        eng_emit = rng_normal(self.rng,self.sec_emit_energy, self.sigma_energy, len(wSec)) # helper needed to use cuda or numpy
         u_emit = energy_to_velocity(eng_emit,self.species1.mass,relativistic=self.relativistic,xp=self.xp)
         uxSec, uzSec = apply_angular_dist(u_emit, nx[I], nz[I], self.sigma_theta_rad, rng=self.rng,xp=self.xp)
         tr = self.sim.time_step_size - delta_t[I]

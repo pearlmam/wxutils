@@ -8,8 +8,12 @@ from pathlib import Path
 import subprocess
 import os
 import shutil
-import dmanage.metadata.metastring as meta
-
+try:
+    import dmanage.metadata.metastring as meta
+except:
+    meta = None
+    
+    
 from .scheduler import Scheduler
 from .job import Job, pyro_expose,pyro_behavior
 
@@ -85,7 +89,10 @@ class DispatchDaemon(Scheduler,ABC):
     
     def _compose_path(self,params, equiv='-', sep='/', order=False,format=None,numDecimals=3):
         run_base_dir = Path(self.run_base_dir)
-        tail_path = Path(meta.compose(params,equiv, sep, order,format,numDecimals) )
+        if meta:
+            tail_path = Path(meta.compose(params,equiv, sep, order,format,numDecimals) )
+        else:
+            raise ModuleNotFoundError("package dmanage is required to automatically compose paths, you must specify the 'run_path' for each job.")
         return run_base_dir / tail_path
     
     ##########################

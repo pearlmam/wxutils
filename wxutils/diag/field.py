@@ -17,7 +17,6 @@ class Field(DiagnosticBase):
         
     def save(self):
         # I probably need to pass all data from here.
-        print('save')
         data = self.data[...]
         self.io.save(self.name,data,grid=self.grid_info)
         self.log_step = 0
@@ -30,7 +29,6 @@ class Field(DiagnosticBase):
         
         If some time filtering is needed, then this can be useful?
         """
-        print('log')
         if (self.step % self.save_period == 0) or self._breaksignal:
             self.save()
         self.log_step += 1

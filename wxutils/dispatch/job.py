@@ -16,6 +16,9 @@ except ImportError:
     # No-op decorator if Pyro5 is not installed
     def pyro_expose(obj):
         return obj
+    # No-op decorator factory (accepts configuration args, returns decorator)
+    def pyro_behavior(*args, **kwargs):
+        return lambda obj: obj
 
 
 

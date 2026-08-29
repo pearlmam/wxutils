@@ -141,5 +141,16 @@ def get_warpx_axis_labels(dims):
         return mapping[dims]
     raise ValueError(f"Unsupported WarpX geometry dimension: {dims}")
     
+    
+def rng_normal(rng, loc=None, scale=None, size=None):
+    loc = 0.0 if loc is None else loc
+    scale = 1.0 if scale is None else scale
+    if size is None:
+        raise TypeError("Argument size is required, but is not declared.")
+    if hasattr(rng, "normal"):
+        return rng.normal(loc, scale, size)
+    return rng.standard_normal(size) * scale + loc
+
+
 if __name__ == "__main__":
     get_warpx_axis_labels(2)
