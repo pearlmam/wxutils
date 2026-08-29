@@ -1,26 +1,36 @@
 # -*- coding: utf-8 -*-
-from wxutils.base import CallbackBase
+from wxutils.core.base import CallbackBase
 from pywarpx import callbacks
+import numpy as np
 
 class DiagnosticBase(CallbackBase):
     def __init__(self, name,io,save_period,**kw):
         self.name = name
         self.io = io
-        self.save_period = save_period
+        self.save_period = int(save_period)
         self.callback_loc = kw.pop("callback_loc", "afterstep")
         self.log_period = int(kw.pop("log_period", 1))
-        
-        
+        self.dtype = kw.pop("dtype",np.float64)
+        self.dump_at_step_zero = kw.pop("dump_at_step_zero",True)
+        self.log_step = 0
         self.lev = 1
+        self.data_buffer_length = int(np.ceil(self.save_period/self.log_period))  # TODO, this needs to have a common denominator, no rounding
         
     def pre_initialize(self,sim):
         super().pre_initialize(sim)
+        if self.dump_at_step_zero:
+            callbacks.installcallback("afterInitEsolve",self._log)
         callbacks.installcallback(self.callback_loc,self._log)
         callbacks.installcallback("onbreaksignal",self._end)
         self.io.pre_initialize(sim)
         
     def post_initialize(self):
         super().post_initialize()
+        self.io.create_dataset(
+            name=self.name,
+            buf_size=self.data_buffer_length,
+            dtype=self.dtype
+            )
         
     def _log(self):
         self.step = self.sim.extension.warpx.getistep(self.lev)
@@ -41,29 +51,31 @@ class DiagnosticBase(CallbackBase):
         If some time filtering is needed, then this can be useful?
         """
         # self.get()
-        if self.buf_step >= self.save_period or self._breaksignal:
+        if (self.step % self.save_period == 0) or self._breaksignal:
             self.save()
-    
+        self.log_step += 1
+        
     def save(self):
         self.io.save(self.name,self.data)
+        self.log_step = 0
     
 class Diagnostic1D(DiagnosticBase):
     def __init__(self, name,io,save_period,**kw):
         super().__init__(name,io,save_period,**kw)
-        self.buf_step = 0
+        self.log_step = 0
     
     def log(self):
         """Purely local logging—zero MPI latency or network communication per step."""
         x0,x1 = self.get()
-        self.data[0, self.buf_step] = x0
-        self.data[1, self.buf_step] = x1
-        self.buf_step += 1
+        self.data[0, self.log_step] = x0
+        self.data[1, self.log_step] = x1
+        self.log_step += 1
         
-        if self.buf_step >= self.buf_size:
+        if self.log_step >= self.save_period:
             self.save()
     
     def get(self):
-        """must return tuple of (value,time), this will get logged"""
+        """must return tuple of (time,value), this will get logged"""
         raise NotImplementedError("this must be defined by your diagnostic and return a tuple of (value,time)")
         
         
