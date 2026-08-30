@@ -5,8 +5,7 @@ from pywarpx.LoadThirdParty import load_cupy
 from wxutils.core import CallbackBase
 import wxutils.mpitools as mpit
 from wxutils.features.helpers import get_valid_region
-import numpy as np
-from wxutils.core.base import GridInfo
+
 class Deposit(CallbackBase):
     def __init__(self,**kw):
         
@@ -48,7 +47,6 @@ class Deposit(CallbackBase):
         
     def post_initialize(self):
         self.xp,_ = load_cupy()
-        self.grid_info = GridInfo(self.sim,self.xp)   # CallbackBase method: adds grid info to self
         self.rho = self.sim.fields.get(self.rhoName,level=self.lev)
         self._rho = self._initialize_rho_temp()
         self.geom = self.sim.extension.warpx.Geom(self.lev)
@@ -188,8 +186,9 @@ class Deposit(CallbackBase):
         if len(x) == 0:
             return
         # mpit.mpi_print(f"pti index {pti.index}: min max:{min(z):.5} {max(z):.5}","all")
-        dx, dz = self.grid_info.dxyz
-        xmin, zmin = self.grid_info.lower_bound
+        lev_info = self.get_lev_info(lev)
+        dx,dz = lev_info.dxyz
+        xmin, zmin = self.sim.solver.grid.lower_bound
         ng_x = self._rho.n_grow_vect[0]
         ng_z = self._rho.n_grow_vect[1]
 
@@ -241,8 +240,9 @@ class Deposit(CallbackBase):
         if len(x) == 0:
             return
     
-        dx, dz = self.grid_info.dxyz
-        xmin, zmin = self.grid_info.lower_bound
+        lev_info = self.get_lev_info(lev)
+        dx,dz = lev_info.dxyz
+        xmin, zmin = self.sim.solver.grid.lower_bound
         ng_x = self._rho.n_grow_vect[0]
         ng_z = self._rho.n_grow_vect[1]
     
@@ -300,8 +300,9 @@ class Deposit(CallbackBase):
         x, z, w = pti["x"], pti["z"], pti["w"]
         if len(x) == 0:
             return
-        dx, dz = self.grid_info.dxyz
-        xmin, zmin = self.grid_info.lower_bound
+        lev_info = self.get_lev_info(lev)
+        dx,dz = lev_info.dxyz
+        xmin, zmin = self.sim.solver.grid.lower_bound
         
         # Nudge scraped particle positions slightly into dielectric along surface normal
         if self.nudge_n or self.split_spread:
@@ -387,8 +388,9 @@ class Deposit(CallbackBase):
         if len(x) == 0:
             return
             
-        dx, dz = self.grid_info.dxyz
-        xmin, zmin = self.grid_info.lower_bound
+        lev_info = self.get_lev_info(lev)
+        dx,dz = lev_info.dxyz
+        xmin, zmin = self.sim.solver.grid.lower_bound
         
         # Nudge scraped particle positions into dielectric along surface normal
         # Nudge scraped particle positions slightly into dielectric along surface normal
@@ -461,13 +463,14 @@ class Deposit(CallbackBase):
         #     dep_weights=[w00,w01,w10,w11]
         #     self._debug_weights(weights=w,dep_weights=dep_weights,valid=valid, q=q, lev=lev)
 
-    def _nudge_split_particles(self, x, z, w, nx, nz, nudge_n=None, spread_t=None,split_weights=[0.25,0.50,0.25]):
+    def _nudge_split_particles(self, x, z, w, nx, nz, nudge_n=None, spread_t=None,split_weights=[0.25,0.50,0.25],lev=0):
         """
         Expands N particles into 3N sub-particles smoothed tangentially along the surface.
         - nudge_n: Normal inward displacement fraction (relative to cell size).
         - spread_t: Tangential spread distance fraction (e.g., 0.5 = half cell size).
         """
-        min_dx = min(self.grid_info.dxyz[0], self.grid_info.dxyz[1])
+        lev_info = self.get_lev_info(lev)
+        min_dx = min(lev_info.dxyz)
         if self.debug: 
             w_tot_0 = w.sum()
             num_particles_0 = w.size

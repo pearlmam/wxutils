@@ -4,10 +4,10 @@ from pywarpx import callbacks
 import numpy as np
 
 class DiagnosticBase(CallbackBase):
-    def __init__(self, name,io,save_period,**kw):
+    def __init__(self, name,**kw):
         self.name = name
-        self.io = io
-        self.save_period = int(save_period)
+        self.io = kw.pop("io",None)
+        self.save_period = int(kw.pop("save_period",2**32-1))
         self.callback_loc = kw.pop("callback_loc", "afterstep")
         self.log_period = int(kw.pop("log_period", 1))
         self.dtype = kw.pop("dtype",np.float64)
@@ -26,11 +26,12 @@ class DiagnosticBase(CallbackBase):
         
     def post_initialize(self):
         super().post_initialize()
-        self.io.create_dataset(
-            name=self.name,
-            buf_size=self.data_buffer_length,
-            dtype=self.dtype
-            )
+        if self.io:
+            self.io.create_dataset(
+                name=self.name,
+                buf_size=self.data_buffer_length,
+                dtype=self.dtype
+                )
         
     def _log(self):
         self.step = self.sim.extension.warpx.getistep(self.lev)
@@ -56,12 +57,13 @@ class DiagnosticBase(CallbackBase):
         self.log_step += 1
         
     def save(self):
-        self.io.save(self.name,self.data)
+        if self.io:
+            self.io.save(self.name,self.data)
         self.log_step = 0
     
 class Diagnostic1D(DiagnosticBase):
     def __init__(self, name,io,save_period,**kw):
-        super().__init__(name,io,save_period,**kw)
+        super().__init__(name,io=io,save_period=save_period,**kw)
         self.log_step = 0
     
     def log(self):

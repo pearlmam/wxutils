@@ -19,6 +19,7 @@ saveloc = Path('./diags/fields')
 class IO():
     def __init__(self,**kw):
         self.path = Path(kw.pop("path","./diags"))
+        self.parallel_write = kw.pop("parallel_write",False)
         self._initialized = False
         
     def pre_initialize(self,sim):
@@ -35,7 +36,7 @@ class IO():
     
     def _install_callbacks(self,):
         callbacks.installcallback("beforeInitEsolve", self.post_initialize)
-        callbacks.installcallback("onbreaksignal",self.close)
+        callbacks.installcallback("onbreaksignal",self.close) # doesnt work
         
     def post_initialize(self):
         self.xp, _ = load_cupy()
@@ -128,9 +129,7 @@ class VizSchema1D(IO):
     
     def on_exit(self):
         self.save()
-    
-    
-        
+
 class OpenPMD(IO):
     def __init__(self, **kw):
         super().__init__(**kw)
@@ -142,11 +141,11 @@ class OpenPMD(IO):
         
     def pre_initialize(self,sim):
         super().pre_initialize(sim)
-        self.series = opmd.Series(self.path, opmd.Access.create)
-        self.series.author = self.author
-        self.series.set_attribute("dependencies", f"{self.series.software} {self.series.software_version}")
-        self.series.set_software(self.software,self.version)
-        
+        if self.parallel_write or self.mpii.is_root:
+            self.series = opmd.Series(self.path, opmd.Access.create)
+            self.series.author = self.author
+            self.series.set_attribute("dependencies", f"{self.series.software} {self.series.software_version}")
+            self.series.set_software(self.software,self.version)
     
     def post_initialize(self):
         super().post_initialize()
@@ -161,78 +160,73 @@ class OpenPMD(IO):
         # not needed?
         pass
             
-    def save(self, name, data, grid, node_to_center=True,lev=0):
-
-        if not (self.mpii.is_root and self._initialized):
+    def save(self,name,data,dxyz,local_offset,global_offset,global_shape,
+             step,t,dt,axis_labels=None,node_to_center=True
+             ):
+        mpit.mpi_print(data.shape)
+        data = data.squeeze()
+        mpit.mpi_print(data.shape)
+        if not self._initialized or not (self.parallel_write or self.mpii.is_root):
             return
+         
         comp_pos = [0.0]
         if node_to_center:
             data = self.node_to_cell_centered(data)
             comp_pos = [0.5]
+            global_shape = [g - 1 for g in global_shape]
         data = to_cpu(data)  # file io on cpu
-
-        step = self.sim.extension.warpx.getistep(lev)
-        t = self.sim.extension.warpx.gett_new(lev)
-        dt = self.sim.time_step_size
     
         it = self.series.iterations[step]
         it.set_time(t)
         it.set_dt(dt)
         it.set_time_unit_SI(1.0)
-    
         mesh = it.meshes[name]
-        
-        # Configure grid metadata and reshape data if needed
-        data_formatted = self.setup_mesh_geometry(mesh, grid, data)
+    
+        # Retrieve formatted data, modified local_offset, and global_shape
+        data_formatted, local_offset, global_shape = self.setup_mesh_geometry(
+            mesh, dxyz, local_offset, global_shape, global_offset, data
+            )
     
         component = mesh[opmd.Mesh.SCALAR]
         component.position = comp_pos * data_formatted.ndim
-        component.reset_dataset(opmd.Dataset(data_formatted.dtype, data_formatted.shape))
-        full_slice = tuple(slice(None) for _ in range(data_formatted.ndim))
-        component[full_slice] = data_formatted
+        component.reset_dataset(opmd.Dataset(data_formatted.dtype, global_shape))
+        local_slice = tuple(
+            slice(offset, offset + extent)
+            for offset, extent in zip(local_offset, data_formatted.shape)
+            )
+
+        component[local_slice] = data_formatted
     
         it.close()
         self.series.flush()
     
-    def setup_mesh_geometry(self, mesh, grid, data):
+    def setup_mesh_geometry(self, mesh, dxyz, local_offset, 
+                            global_shape, global_offset, data
+                            ):
         """
         Configures openPMD mesh metadata based on data dimensionality.
         Pads 2D (z, x) grids into 3D (z, y, x) with unit thickness along y.
         """
         ndim = data.ndim
-        # TODO need RZ check here
         if ndim == 2:
             # Reshape 2D array [Nz, Nx] -> 3D array [Nz, 1, Nx]
             data_formatted = data.reshape(data.shape[0], 1, data.shape[1])
-            
-            # Insert unit spacing and y-axis label for 3D representation
-            dx = grid.dxyz[0] if grid.dims > 0 else 1.0
-            dz = grid.dxyz[1] if grid.dims > 1 else 1.0
-            mesh.grid_spacing = [dx, 1.0, dz]
-            mesh.grid_global_offset = [0.0, 0.0, 0.0]
-    
-            if len(grid.axis_labels) == 2:
-                mesh.axis_labels = [grid.axis_labels[0], 'y', grid.axis_labels[1]]
-            else:
-                mesh.axis_labels = list(grid.axis_labels)
-    
-        elif ndim == 3:
+            local_offset = [local_offset[0], 0, local_offset[1]]
+            global_offset = [global_offset[0], 0, global_offset[1]]
+            global_shape = [global_shape[0], 1, global_shape[1]]
+            dxyz = [dxyz[0], 1.0, dxyz[1]]
+        elif ndim in (1, 3):
             data_formatted = data
-            mesh.grid_spacing = list(grid.dxyz)
-            mesh.grid_global_offset = [0.0, 0.0, 0.0]
-            mesh.axis_labels = list(grid.axis_labels)
-    
-        elif ndim == 1:
-            data_formatted = data
-            mesh.grid_spacing = list(grid.dxyz)
-            mesh.grid_global_offset = [0.0]
-            mesh.axis_labels = list(grid.axis_labels)
-    
+            local_offset = list(local_offset)
         else:
             raise ValueError(f"Unsupported data dimension: {ndim}")
     
+        mesh.grid_spacing = dxyz
+        mesh.grid_global_offset = global_offset
         mesh.data_order = 'C'
-        return data_formatted
+        mesh.axis_labels = ['x', 'y', 'z']
+    
+        return data_formatted, local_offset, global_shape
     
     def node_to_cell_centered(self,data):
         """
@@ -256,9 +250,24 @@ class OpenPMD(IO):
         return data
     
     def close(self,):
-        self.series.flush()
-        self.series.close()
+        if self.parallel_write or self.mpii.is_root:
+            self.series.flush()
+            self.series.close()
+     
         
+def get_warpx_axis_labels(dims):
+    dims = str(dims)  
+    mapping = {
+        "3": ["x", "y", "z"],
+        "2": ["x", "y","z"],
+        "RZ": ["r", "z"],
+        "1": ["z"],
+        }
+
+    if dims in mapping:
+        return mapping[dims]
+    raise ValueError(f"Unsupported WarpX geometry dimension: {dims}")
+    
 def save_to_npy(field,path,suffix=None):
     global_data = field[...]   # this does an mpi gather on all ranks
     if mpit.get_rank() == 0:
