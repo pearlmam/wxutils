@@ -5,6 +5,7 @@ import numpy as np
 from importlib.metadata import version
 import wxutils.mpitools as mpit
 from wxutils.utils import to_cpu
+from wxutils.ops.grid import to_cell_centered
 import openpmd_api as opmd
 import getpass
 
@@ -188,8 +189,6 @@ class OpenPMD(IO):
             else:
                 # Auto-detect directly from this component's formatted array
                 comp_global_shape = [int(s) for s in data_formatted.shape]
-            print(f"data shape {comp_name}: {data_formatted.shape}")
-            print(f"global shape: {comp_global_shape}")
             component = mesh[comp_name]
             component.position = position * data_formatted.ndim
             component.reset_dataset(opmd.Dataset(data_formatted.dtype, comp_global_shape))
@@ -206,7 +205,6 @@ class OpenPMD(IO):
 
     
     def prepare_data_dict(self,data,to_center=False):
-
         if isinstance(data, dict):
             data_dict = data
         else:
@@ -216,87 +214,12 @@ class OpenPMD(IO):
         for comp, data in data_dict.items():
             arr = data.squeeze()
             if to_center:
-                arr = self.to_cell_centered(arr,comp)
+                arr = to_cell_centered(arr,comp)
             arr = to_cpu(arr)
             processed_dict[comp] = arr
         
         return processed_dict, arr.ndim
-    
-    def node_to_cell_centered(self,data):
-        """
-        Averages node-centered array data (N+1 points per axis) 
-        to cell-centered data (N points per axis).
-        """
-        if data.ndim == 1:
-            return 0.5 * (data[:-1] + data[1:])
-        elif data.ndim == 2:
-            return 0.25 * (
-                data[:-1, :-1] + data[1:, :-1] + 
-                data[:-1, 1:]  + data[1:, 1:]
-            )
-        elif data.ndim == 3:
-            return 0.125 * (
-                data[:-1, :-1, :-1] + data[1:, :-1, :-1] +
-                data[:-1, 1:, :-1]  + data[1:, 1:, :-1]  +
-                data[:-1, :-1, 1:]  + data[1:, :-1, 1:]  +
-                data[:-1, 1:, 1:]   + data[1:, 1:, 1:]
-            )
-        return data
-        
-    
-    import numpy as np
-
-    def to_cell_centered(self, data, comp=None, domain_cells=None):
-        """
-        Universal GPU/CPU converter supporting [x, z] or [x, y, z] array layout.
-        Averages only the axes whose length equals target_len + 1 (nodal).
-        """
-        arr = data.squeeze()
-        nodal_axes = []
-        print(f"before center {comp}: {arr.shape}")
-        # 1. Preferred: Universal shape matching against domain cell counts
-        if domain_cells is not None:
-            # Match domain_cells dimensionality to squeezed array
-            target_cells = [c for c in domain_cells if c > 1] if len(domain_cells) != arr.ndim else domain_cells
-            for axis, (curr_len, target_len) in enumerate(zip(arr.shape, target_cells)):
-                if curr_len == target_len + 1:
-                    nodal_axes.append(axis)
-    
-        # 2. Fallback: Yee-grid nodal axes assuming [x, z] or [x, y, z] layout
-        elif comp is not None:
-            comp_key = str(comp).lower().replace("e", "").replace("b", "")
-            ndim = arr.ndim
-    
-            if ndim == 2:  # Layout: [x, z]
-                if comp_key == "x":
-                    nodal_axes = [1]  # Ex is Nodal in z (axis 1)
-                elif comp_key == "z":
-                    nodal_axes = [0]  # Ez is Nodal in x (axis 0)
-                elif comp_key in ("y", "rho", "phi", "node", "scalar"):
-                    nodal_axes = [0, 1]  # Nodal in both
-    
-            elif ndim == 3:  # Layout: [x, y, z]
-                if comp_key == "x":
-                    nodal_axes = [1, 2]  # Nodal in y, z
-                elif comp_key == "y":
-                    nodal_axes = [0, 2]  # Nodal in x, z
-                elif comp_key == "z":
-                    nodal_axes = [0, 1]  # Nodal in x, y
-                elif comp_key in ("rho", "phi", "node", "scalar"):
-                    nodal_axes = [0, 1, 2]
-    
-        # 3. GPU/CPU zero-copy slice averaging
-        for axis in nodal_axes:
-            slc_a = [slice(None)] * arr.ndim
-            slc_b = [slice(None)] * arr.ndim
-            slc_a[axis] = slice(0, -1)
-            slc_b[axis] = slice(1, None)
-    
-            arr = 0.5 * (arr[tuple(slc_a)] + arr[tuple(slc_b)])
-        print(f"after center {comp}: {arr.shape}")
-        return arr
-    
-   
+     
     def close(self,):
         if self.parallel_write or self.mpii.is_root:
             self.series.flush()
