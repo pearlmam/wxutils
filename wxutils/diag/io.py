@@ -183,13 +183,13 @@ class OpenPMD(IO):
             data_formatted = self._format_array_shape(comp_data)
             # Detect dataset shape PER COMPONENT
             if user_global_shape is not None:
-                g_shape = [g - 1 for g in user_global_shape] if to_center else list(user_global_shape)
+                g_shape = [g - 1  for g in user_global_shape] if to_center else list(user_global_shape)
                 comp_global_shape = [g_shape[0], 1, g_shape[1]] if ndim == 2 else g_shape
             else:
                 # Auto-detect directly from this component's formatted array
                 comp_global_shape = [int(s) for s in data_formatted.shape]
-        
-        
+            print(f"data shape {comp_name}: {data_formatted.shape}")
+            print(f"global shape: {comp_global_shape}")
             component = mesh[comp_name]
             component.position = position * data_formatted.ndim
             component.reset_dataset(opmd.Dataset(data_formatted.dtype, comp_global_shape))
@@ -248,55 +248,44 @@ class OpenPMD(IO):
 
     def to_cell_centered(self, data, comp=None, domain_cells=None):
         """
-        GPU/CPU universal staggered-to-cell-center converter for a single array.
-        Preserves device placement (CuPy, PyTorch, NumPy) with zero host transfers.
-    
-        Parameters
-        ----------
-        data : array-like (NumPy, CuPy, PyTorch, PyAMReX view)
-            The raw field component array.
-        comp : str, optional
-            Component name ('x', 'y', 'z', 'Ex', 'Ez', 'rho', etc.).
-        domain_cells : list/tuple of int, optional
-            Domain cell counts [Nz, (Ny,) Nx]. If provided, shape-matching is used.
-    
-        Returns
-        -------
-        array-like
-            The cell-centered array on the original GPU/CPU device.
+        Universal GPU/CPU converter supporting [x, z] or [x, y, z] array layout.
+        Averages only the axes whose length equals target_len + 1 (nodal).
         """
         arr = data.squeeze()
         nodal_axes = []
-    
-        # 1. Preferred method: Shape-matching against target domain cell counts
+        print(f"before center {comp}: {arr.shape}")
+        # 1. Preferred: Universal shape matching against domain cell counts
         if domain_cells is not None:
-            for axis, (curr_len, target_len) in enumerate(zip(arr.shape, domain_cells)):
+            # Match domain_cells dimensionality to squeezed array
+            target_cells = [c for c in domain_cells if c > 1] if len(domain_cells) != arr.ndim else domain_cells
+            for axis, (curr_len, target_len) in enumerate(zip(arr.shape, target_cells)):
                 if curr_len == target_len + 1:
                     nodal_axes.append(axis)
     
-        # 2. Fallback: Deduce Yee grid nodal axes from component name in [z, (y,) x] ordering
+        # 2. Fallback: Yee-grid nodal axes assuming [x, z] or [x, y, z] layout
         elif comp is not None:
             comp_key = str(comp).lower().replace("e", "").replace("b", "")
             ndim = arr.ndim
     
-            if ndim == 2:  # Layout: [z, x]
+            if ndim == 2:  # Layout: [x, z]
                 if comp_key == "x":
-                    nodal_axes = [0]  # Ex is Nodal in z
+                    nodal_axes = [1]  # Ex is Nodal in z (axis 1)
                 elif comp_key == "z":
-                    nodal_axes = [1]  # Ez is Nodal in x
-                elif comp_key in ("y", "rho", "phi", "node"):
+                    nodal_axes = [0]  # Ez is Nodal in x (axis 0)
+                elif comp_key in ("y", "rho", "phi", "node", "scalar"):
                     nodal_axes = [0, 1]  # Nodal in both
-            elif ndim == 3:  # Layout: [z, y, x]
+    
+            elif ndim == 3:  # Layout: [x, y, z]
                 if comp_key == "x":
-                    nodal_axes = [0, 1]  # Ex edge: Nodal in z, y
+                    nodal_axes = [1, 2]  # Nodal in y, z
                 elif comp_key == "y":
-                    nodal_axes = [0, 2]  # Ey edge: Nodal in z, x
+                    nodal_axes = [0, 2]  # Nodal in x, z
                 elif comp_key == "z":
-                    nodal_axes = [1, 2]  # Ez edge: Nodal in y, x
-                elif comp_key in ("rho", "phi", "node"):
+                    nodal_axes = [0, 1]  # Nodal in x, y
+                elif comp_key in ("rho", "phi", "node", "scalar"):
                     nodal_axes = [0, 1, 2]
     
-        # 3. Perform GPU/CPU zero-copy slice averaging along nodal axes
+        # 3. GPU/CPU zero-copy slice averaging
         for axis in nodal_axes:
             slc_a = [slice(None)] * arr.ndim
             slc_b = [slice(None)] * arr.ndim
@@ -304,10 +293,10 @@ class OpenPMD(IO):
             slc_b[axis] = slice(1, None)
     
             arr = 0.5 * (arr[tuple(slc_a)] + arr[tuple(slc_b)])
-    
+        print(f"after center {comp}: {arr.shape}")
         return arr
     
-    
+   
     def close(self,):
         if self.parallel_write or self.mpii.is_root:
             self.series.flush()

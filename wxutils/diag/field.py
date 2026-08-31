@@ -22,7 +22,7 @@ class Field(DiagnosticBase):
             for dir in self.comps:
                 self.data[dir] = self.sim.fields.get(self.name,dir=dir,level=self.lev)
         else:
-            self.data = {self.name:self.sim.fields.get(self.name,level=self.lev)}
+            self.data = {"scalar":self.sim.fields.get(self.name,level=self.lev)}
         
     def save(self):
         
@@ -74,9 +74,9 @@ class Field(DiagnosticBase):
                     dxyz=lev_info.dxyz,
                     local_offset=[0,0,0],
                     global_offset=global_info.lower_bound,
-                    global_shape=global_info.shape,
+                    # global_shape=global_info.shape,
                     axis_labels=None,
-                    #to_center = self.to_center,
+                    to_center = self.to_center,
 
                     )
     
