@@ -144,9 +144,9 @@ class OpenPMD(IO):
         t = kw.pop("t",step)
         dt = kw.pop("dt",1.0)
         dxyz = kw.pop("dxyz",1.0)
-        node_to_center = kw.pop("node_to_center",False)
+        to_center = kw.pop("to_center",False)
         # axis_labels = kw.pop("axis_labels",None)
-        data_dict,ndim = self.prepare_data_dict(data,node_to_center)   
+        data_dict,ndim = self.prepare_data_dict(data,to_center)   
         local_offset = kw.pop("local_offset",[0]*ndim)
         global_offset = kw.pop("global_offset",[0.0]*ndim)
         if isinstance(dxyz, (int, float)):
@@ -154,7 +154,7 @@ class OpenPMD(IO):
             
         user_global_shape = kw.pop("global_shape",None)
         
-        position = [0.5] if node_to_center else [0.0]
+        position = [0.5] if to_center else [0.0]
 
         
         ##### OpenPMD Iteration setup
@@ -183,7 +183,7 @@ class OpenPMD(IO):
             data_formatted = self._format_array_shape(comp_data)
             # Detect dataset shape PER COMPONENT
             if user_global_shape is not None:
-                g_shape = [g - 1 for g in user_global_shape] if node_to_center else list(user_global_shape)
+                g_shape = [g - 1 for g in user_global_shape] if to_center else list(user_global_shape)
                 comp_global_shape = [g_shape[0], 1, g_shape[1]] if ndim == 2 else g_shape
             else:
                 # Auto-detect directly from this component's formatted array
@@ -205,8 +205,8 @@ class OpenPMD(IO):
         return data.reshape(data.shape[0], 1, data.shape[1]) if data.ndim == 2 else data
 
     
-    def prepare_data_dict(self,data,node_to_center=False):
-        
+    def prepare_data_dict(self,data,to_center=False):
+
         if isinstance(data, dict):
             data_dict = data
         else:
@@ -215,8 +215,8 @@ class OpenPMD(IO):
         processed_dict = {}
         for comp, data in data_dict.items():
             arr = data.squeeze()
-            if node_to_center:
-                arr = self.node_to_cell_centered(arr)
+            if to_center:
+                arr = self.to_cell_centered(arr,comp)
             arr = to_cpu(arr)
             processed_dict[comp] = arr
         
@@ -242,7 +242,70 @@ class OpenPMD(IO):
                 data[:-1, 1:, 1:]   + data[1:, 1:, 1:]
             )
         return data
+        
     
+    import numpy as np
+
+    def to_cell_centered(self, data, comp=None, domain_cells=None):
+        """
+        GPU/CPU universal staggered-to-cell-center converter for a single array.
+        Preserves device placement (CuPy, PyTorch, NumPy) with zero host transfers.
+    
+        Parameters
+        ----------
+        data : array-like (NumPy, CuPy, PyTorch, PyAMReX view)
+            The raw field component array.
+        comp : str, optional
+            Component name ('x', 'y', 'z', 'Ex', 'Ez', 'rho', etc.).
+        domain_cells : list/tuple of int, optional
+            Domain cell counts [Nz, (Ny,) Nx]. If provided, shape-matching is used.
+    
+        Returns
+        -------
+        array-like
+            The cell-centered array on the original GPU/CPU device.
+        """
+        arr = data.squeeze()
+        nodal_axes = []
+    
+        # 1. Preferred method: Shape-matching against target domain cell counts
+        if domain_cells is not None:
+            for axis, (curr_len, target_len) in enumerate(zip(arr.shape, domain_cells)):
+                if curr_len == target_len + 1:
+                    nodal_axes.append(axis)
+    
+        # 2. Fallback: Deduce Yee grid nodal axes from component name in [z, (y,) x] ordering
+        elif comp is not None:
+            comp_key = str(comp).lower().replace("e", "").replace("b", "")
+            ndim = arr.ndim
+    
+            if ndim == 2:  # Layout: [z, x]
+                if comp_key == "x":
+                    nodal_axes = [0]  # Ex is Nodal in z
+                elif comp_key == "z":
+                    nodal_axes = [1]  # Ez is Nodal in x
+                elif comp_key in ("y", "rho", "phi", "node"):
+                    nodal_axes = [0, 1]  # Nodal in both
+            elif ndim == 3:  # Layout: [z, y, x]
+                if comp_key == "x":
+                    nodal_axes = [0, 1]  # Ex edge: Nodal in z, y
+                elif comp_key == "y":
+                    nodal_axes = [0, 2]  # Ey edge: Nodal in z, x
+                elif comp_key == "z":
+                    nodal_axes = [1, 2]  # Ez edge: Nodal in y, x
+                elif comp_key in ("rho", "phi", "node"):
+                    nodal_axes = [0, 1, 2]
+    
+        # 3. Perform GPU/CPU zero-copy slice averaging along nodal axes
+        for axis in nodal_axes:
+            slc_a = [slice(None)] * arr.ndim
+            slc_b = [slice(None)] * arr.ndim
+            slc_a[axis] = slice(0, -1)
+            slc_b[axis] = slice(1, None)
+    
+            arr = 0.5 * (arr[tuple(slc_a)] + arr[tuple(slc_b)])
+    
+        return arr
     
     
     def close(self,):
