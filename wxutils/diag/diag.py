@@ -22,8 +22,9 @@ class DiagnosticBase(CallbackBase):
             callbacks.installcallback("afterInitEsolve",self._log)
         callbacks.installcallback(self.callback_loc,self._log)
         callbacks.installcallback("onbreaksignal",self._end)
-        self.io.pre_initialize(sim)
-        
+        if self.io:
+            self.io.initialize()
+    
     def post_initialize(self):
         super().post_initialize()
         if self.io:

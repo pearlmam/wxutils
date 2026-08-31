@@ -9,6 +9,8 @@ class Field(DiagnosticBase):
         self.comps = kw.pop("comps",None)
         if self.comps and not isinstance(self.comps,(tuple,list)):
             self.comps = [self.comps]
+        self.to_center = kw.pop("to_center",False)
+
         
     def pre_initialize(self,sim):
         super().pre_initialize(sim)
@@ -57,21 +59,25 @@ class Field(DiagnosticBase):
             lev_info = self.get_lev_info(self.lev)
             global_info = self.get_global_info()
             data = {}
+            # global_shape = {}  # global shape not needed because this data is global
             for comp,data_comp in self.data.items():
                 data[comp] = data_comp[...]
+                # global_shape[comp] = data_comp.shape
+                # print(global_shape[comp])
             if self.mpii.is_root:
                 self.io.save(
                     name=self.name,
                     data=data,
+                    step=lev_info.step,
+                    t=lev_info.t,
+                    dt=lev_info.dt,
                     dxyz=lev_info.dxyz,
                     local_offset=[0,0,0],
                     global_offset=global_info.lower_bound,
                     global_shape=global_info.shape,
-                    step=lev_info.step,
-                    t=lev_info.t,
-                    dt=lev_info.dt,
                     axis_labels=None,
-                    node_to_center=True,
+                    #to_center = self.to_center,
+
                     )
     
         self.log_step = 0

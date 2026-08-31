@@ -88,9 +88,12 @@ class CallbackBase(Setup):
             dt=self.sim.extension.warpx.getdt(lev)
             )
     
-    def get_global_info(self,reverse=False):
-        lower_bound=self.sim.solver.grid.lower_bound
-        upper_bound=self.sim.solver.grid.upper_bound
+    def get_global_info(self,lev=0,reverse=False):
+        geom = self.sim.extension.warpx.Geom(lev)
+        lower_bound=list(geom.ProbLo())
+        upper_bound=list(geom.ProbHi())
+        # print(geom.domain)
+        # number_of_cells=[int(s) for s in list(geom.domain)]
         number_of_cells=self.sim.solver.grid.number_of_cells
         if reverse:
             lower_bound=list(reversed(lower_bound))

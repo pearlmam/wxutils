@@ -1,20 +1,14 @@
 import os
-import atexit
 from pathlib import Path
 import h5py
 import numpy as np
 from importlib.metadata import version
-from pywarpx.LoadThirdParty import load_cupy
 import wxutils.mpitools as mpit
 from wxutils.utils import to_cpu
 import openpmd_api as opmd
 import getpass
-from pywarpx import callbacks
 
 saveloc = Path('./diags/fields')
-
-
-
 
 class IO():
     def __init__(self,**kw):
@@ -22,26 +16,16 @@ class IO():
         self.parallel_write = kw.pop("parallel_write",False)
         self._initialized = False
         
-    def pre_initialize(self,sim):
+    def initialize(self):
         if self._initialized:
             return
         self.mpii = mpit.Info()
-        self._install_callbacks()
-        self.sim = sim
         self.author = getpass.getuser()
         self.software = "wxutils"
         self.version = version("wxutils")
-        self._initialized = False
         self.initialize_file()
-    
-    def _install_callbacks(self,):
-        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
-        callbacks.installcallback("onbreaksignal",self.close) # doesnt work
-        
-    def post_initialize(self):
-        self.xp, _ = load_cupy()
         self._initialized = True
-        
+    
     def initialize_file(self):
         raise NotImplementedError("initialize_file is not implemented. Use it to create the data space")
     
@@ -59,11 +43,6 @@ class VizSchema1D(IO):
         super().__init__(**kw)
         self.path = self.path /"history.h5"
         self.datasets = []
-
-    def pre_initialize(self,sim):
-        super().pre_initialize(sim)
-        
-        
         
     def initialize_file(self):
         if self.mpii.is_root and not self._initialized:
@@ -139,16 +118,13 @@ class OpenPMD(IO):
         self.path = kw.pop("path",self.path)
         self.path = self.path / self.file_template
         
-    def pre_initialize(self,sim):
-        super().pre_initialize(sim)
+    def initialize(self):
+        super().initialize()
         if self.parallel_write or self.mpii.is_root:
             self.series = opmd.Series(self.path, opmd.Access.create)
             self.series.author = self.author
             self.series.set_attribute("dependencies", f"{self.series.software} {self.series.software_version}")
             self.series.set_software(self.software,self.version)
-    
-    def post_initialize(self):
-        super().post_initialize()
     
     def initialize_file(self,):
         if self.mpii.is_root and not self._initialized:
@@ -160,22 +136,35 @@ class OpenPMD(IO):
         # not needed?
         pass
             
-    def save(self,name,data,dxyz,local_offset,global_offset,global_shape,
-             step,t,dt,axis_labels=None,node_to_center=True
-             ):
-    
-        if not self._initialized or not (self.parallel_write or self.mpii.is_root):
-            return
-    
-        # adjust shape and position if node_to_center
-        position = [0.5] if node_to_center else [0.0]
-        if node_to_center:
-            global_shape = [g - 1 for g in global_shape]
-    
-        # Process all component arrays (squeeze, node-to-cell, host copy)
-        data_dict,ndim = self.prepare_data_dict(data,node_to_center)
         
-        # OpenPMD Iteration setup
+    def save(self,name,data,step,**kw):
+        if not self._initialized or not (self.parallel_write or self.mpii.is_root):
+            return  
+        ##### prepare inputs
+        t = kw.pop("t",step)
+        dt = kw.pop("dt",1.0)
+        dxyz = kw.pop("dxyz",1.0)
+        node_to_center = kw.pop("node_to_center",True)
+        # axis_labels = kw.pop("axis_labels",None)
+        data_dict,ndim = self.prepare_data_dict(data,node_to_center)   
+        local_offset = kw.pop("local_offset",[0]*ndim)
+        global_offset = kw.pop("global_offset",[0.0]*ndim)
+        if isinstance(dxyz, (int, float)):
+            dxyz = [float(dxyz)] * ndim
+            
+        global_shape = kw.pop("global_shape",None)
+        if global_shape is not None:
+            global_shape = [g - 1 for g in global_shape] if node_to_center else list(global_shape)
+        else:
+            global_shape = list(next(iter(data_dict.values())).shape)
+        position = [0.5] if node_to_center else [0.0]
+
+        
+        print(local_offset)
+        print(global_offset)
+        print(dxyz)
+        print(global_shape)
+        ##### OpenPMD Iteration setup
         it = self.series.iterations[step]
         # it.open()     # use if iteration is expected to be closed
         it.set_time(t)
@@ -183,7 +172,7 @@ class OpenPMD(IO):
         it.set_time_unit_SI(1.0)
         mesh = it.meshes[name]
     
-        # Configure shared mesh geometry ONCE using a reference array component
+        #### setup mesh geometry
         local_offset, global_shape = self.setup_mesh_geometry(
             mesh=mesh, 
             dxyz=dxyz, 
@@ -193,6 +182,7 @@ class OpenPMD(IO):
             ndim=ndim
             )
     
+        #### write the data
         for comp_name, comp_data in data_dict.items():
             data_formatted = self._format_array_shape(comp_data)
         
