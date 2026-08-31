@@ -6,14 +6,21 @@ import numpy as np
 class Field(DiagnosticBase):
     def __init__(self, name, io,save_period,**kw):
         super().__init__(name, io=io,save_period=save_period,**kw)
+        self.comps = kw.pop("comps",None)
+        if self.comps and not isinstance(self.comps,(tuple,list)):
+            self.comps = [self.comps]
         
     def pre_initialize(self,sim):
         super().pre_initialize(sim)
 
     def post_initialize(self):
         super().post_initialize()
-        self.data = self.sim.fields.get(self.name,level=self.lev)
-        
+        if self.comps:
+            self.data = {}
+            for dir in self.comps:
+                self.data[dir] = self.sim.fields.get(self.name,dir=dir,level=self.lev)
+        else:
+            self.data = {self.name:self.sim.fields.get(self.name,level=self.lev)}
         
     def save(self):
         
@@ -49,7 +56,9 @@ class Field(DiagnosticBase):
             ###### mpi gather implementation
             lev_info = self.get_lev_info(self.lev)
             global_info = self.get_global_info()
-            data = self.data[...]
+            data = {}
+            for comp,data_comp in self.data.items():
+                data[comp] = data_comp[...]
             if self.mpii.is_root:
                 self.io.save(
                     name=self.name,

@@ -163,61 +163,66 @@ class OpenPMD(IO):
     def save(self,name,data,dxyz,local_offset,global_offset,global_shape,
              step,t,dt,axis_labels=None,node_to_center=True
              ):
-        mpit.mpi_print(data.shape)
-        data = data.squeeze()
-        mpit.mpi_print(data.shape)
+    
         if not self._initialized or not (self.parallel_write or self.mpii.is_root):
             return
-         
-        comp_pos = [0.0]
-        if node_to_center:
-            data = self.node_to_cell_centered(data)
-            comp_pos = [0.5]
-            global_shape = [g - 1 for g in global_shape]
-        data = to_cpu(data)  # file io on cpu
     
+        # adjust shape and position if node_to_center
+        position = [0.5] if node_to_center else [0.0]
+        if node_to_center:
+            global_shape = [g - 1 for g in global_shape]
+    
+        # Process all component arrays (squeeze, node-to-cell, host copy)
+        data_dict,ndim = self.prepare_data_dict(data,node_to_center)
+        
+        # OpenPMD Iteration setup
         it = self.series.iterations[step]
+        # it.open()     # use if iteration is expected to be closed
         it.set_time(t)
         it.set_dt(dt)
         it.set_time_unit_SI(1.0)
         mesh = it.meshes[name]
     
-        # Retrieve formatted data, modified local_offset, and global_shape
-        data_formatted, local_offset, global_shape = self.setup_mesh_geometry(
-            mesh, dxyz, local_offset, global_shape, global_offset, data
+        # Configure shared mesh geometry ONCE using a reference array component
+        local_offset, global_shape = self.setup_mesh_geometry(
+            mesh=mesh, 
+            dxyz=dxyz, 
+            local_offset=local_offset, 
+            global_shape=global_shape, 
+            global_offset=global_offset, 
+            ndim=ndim
             )
     
-        component = mesh[opmd.Mesh.SCALAR]
-        component.position = comp_pos * data_formatted.ndim
-        component.reset_dataset(opmd.Dataset(data_formatted.dtype, global_shape))
-        local_slice = tuple(
-            slice(offset, offset + extent)
-            for offset, extent in zip(local_offset, data_formatted.shape)
-            )
-
-        component[local_slice] = data_formatted
+        for comp_name, comp_data in data_dict.items():
+            data_formatted = self._format_array_shape(comp_data)
+        
+            component = mesh[comp_name]
+            component.position = position * data_formatted.ndim
+            component.reset_dataset(opmd.Dataset(data_formatted.dtype, global_shape))
+        
+            local_slice = tuple(slice(off, off + size) for off, size in zip(local_offset, data_formatted.shape))
+            component[local_slice] = data_formatted
     
-        it.close()
+        # it.close()   # dont close so that additional fields can be added to the iteration
         self.series.flush()
     
+    def _format_array_shape(self, data):
+        """Pads 2D arrays [Nz, Nx] into 3D [Nz, 1, Nx]."""
+        return data.reshape(data.shape[0], 1, data.shape[1]) if data.ndim == 2 else data
+    
     def setup_mesh_geometry(self, mesh, dxyz, local_offset, 
-                            global_shape, global_offset, data
+                            global_shape, global_offset,ndim
                             ):
         """
         Configures openPMD mesh metadata based on data dimensionality.
         Pads 2D (z, x) grids into 3D (z, y, x) with unit thickness along y.
         """
-        ndim = data.ndim
+
         if ndim == 2:
-            # Reshape 2D array [Nz, Nx] -> 3D array [Nz, 1, Nx]
-            data_formatted = data.reshape(data.shape[0], 1, data.shape[1])
             local_offset = [local_offset[0], 0, local_offset[1]]
             global_offset = [global_offset[0], 0, global_offset[1]]
             global_shape = [global_shape[0], 1, global_shape[1]]
             dxyz = [dxyz[0], 1.0, dxyz[1]]
-        elif ndim in (1, 3):
-            data_formatted = data
-            local_offset = list(local_offset)
         else:
             raise ValueError(f"Unsupported data dimension: {ndim}")
     
@@ -226,7 +231,24 @@ class OpenPMD(IO):
         mesh.data_order = 'C'
         mesh.axis_labels = ['x', 'y', 'z']
     
-        return data_formatted, local_offset, global_shape
+        return local_offset, global_shape
+    
+    def prepare_data_dict(self,data,node_to_center=False):
+        
+        if isinstance(data, dict):
+            data_dict = data
+        else:
+            data_dict = {opmd.Mesh.SCALAR: data}
+        
+        processed_dict = {}
+        for comp, data in data_dict.items():
+            arr = data.squeeze()
+            if node_to_center:
+                arr = self.node_to_cell_centered(arr)
+            arr = to_cpu(arr)
+            processed_dict[comp] = arr
+        
+        return processed_dict, arr.ndim
     
     def node_to_cell_centered(self,data):
         """
