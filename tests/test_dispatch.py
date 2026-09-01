@@ -27,9 +27,9 @@ def test_dispatch(self):
     
 if __name__ == "__main__":
     uri = "PYRO:ProxyDispatch@localhost:44444"
-    dispatch =  Pyro5.api.Proxy(uri=uri)
-
-    # dispatch = WarpXDispatchDaemon()
+    # dispatch =  Pyro5.api.Proxy(uri=uri)
+    
+    dispatch = WarpXDispatchDaemon()
     dispatch.set_poll_interval(1.0)
     for job_parameter in job_parameters:
         job_info_local = dispatch.create_job(model_path, job_params=job_parameter,nc=2)
@@ -37,7 +37,8 @@ if __name__ == "__main__":
     job_ids = dispatch.get_ids()
     dispatch.submit_pending()
     # jobs = dispatch.get_jobs()
-
+    # dispatch.kill_active_jobs()
+    # dispatch.stop_scheduler()
     
     
     

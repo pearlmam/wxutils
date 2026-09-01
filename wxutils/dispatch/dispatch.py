@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
   
-from abc import ABC, abstractmethod  
+
 from typing import Optional, Dict, Any, List
 import inspect
 import json
 from pathlib import Path
-import subprocess
+
 import os
-import shutil
+from .engine import WarpXEngine
+import uuid
 try:
     import dmanage.metadata.metastring as meta
 except:
@@ -15,7 +16,7 @@ except:
     
     
 from .scheduler import Scheduler
-from .job import Job, pyro_expose,pyro_behavior
+from .job import Job, pyro_expose,pyro_behavior,PrettyList
 
 def load_job_config(inject_globals: bool = True, require_existing: bool = True) -> dict:
     config_raw = os.environ.get("JOB_CONFIG", "{}")
@@ -53,39 +54,16 @@ def load_job_config(inject_globals: bool = True, require_existing: bool = True) 
 
 @pyro_expose
 @pyro_behavior(instance_mode="single")
-class DispatchDaemon(Scheduler,ABC):
-    def __init__(self,run_base_dir=None,max_concurrent_jobs = 2, poll_interval = 2.0):
-        super().__init__(max_concurrent_jobs, poll_interval)
+class DispatchDaemon():
+    def __init__(self,engine,run_base_dir=None,max_concurrent_jobs = 2, poll_interval = 2.0):
         
         self.model_include_patterns = None
         self.model_ignore_patterns = ["__pycache__", "*.pyc", "*.log", ".git","*.h5","*.png"]
         defualt_base_dir = Path.home() / "Documents" / "data"
         self.run_base_dir = Path(run_base_dir) if run_base_dir else defualt_base_dir
-        
-    @abstractmethod 
-    def _start_job(self, job: Job) -> None:
-        """Child classes MUST implement this method to handle process execution."""
-        pass
+        self.scheduler = Scheduler(engine,max_concurrent_jobs, poll_interval)
+        self.jobs = self.scheduler.jobs    # currently a copy for convenience
     
-    def _spawn_run_dir(self, job: str | Job, include_queued: bool = True) -> Path:
-        job = self.jobs[job] if isinstance(job, str) else job
-        source_dir,_ =  job.check_model_path()
-        job.check_run_path()
-        run_dir = job.run_path
-        job.run_path.mkdir(parents=True, exist_ok=True)
-    
-        if job.model_include_patterns:
-            # Pattern-based copying: Grab only matching files
-            for pattern in job.model_include_patterns:
-                for source_file in source_dir.glob(pattern):
-                    if source_file.is_file():
-                        shutil.copy2(source_file, run_dir / source_file.name)
-        else:
-            # Whole-directory copying: Copy everything except ignored patterns
-            ignore_func = shutil.ignore_patterns(*(job.model_ignore_patterns or []))
-            shutil.copytree(source_dir, run_dir, dirs_exist_ok=True, ignore=ignore_func)
-    
-        return run_dir
     
     def _compose_path(self,params, equiv='-', sep='/', order=False,format=None,numDecimals=3):
         run_base_dir = Path(self.run_base_dir)
@@ -168,6 +146,8 @@ class DispatchDaemon(Scheduler,ABC):
     
     @pyro_expose
     def submit_job(self, job: str | Job, nc: [int] = None):
+        if not self.scheduler.is_running:
+            raise Exception("The scheduler is NOT running! Start the scheduler before submiting jobs.")
         job = self.jobs[job] if isinstance(job, str) else job
         #### check for issues
         if not job:
@@ -185,16 +165,16 @@ class DispatchDaemon(Scheduler,ABC):
     @pyro_expose
     def kill_job(self, *args, **kwargs):
         # Optional pre-processing or logging
-        return super().kill_job(*args, **kwargs)
+        return self.scheduler.kill_job(*args, **kwargs)
     
     @pyro_expose
     def kill_active_jobs(self, *args, **kwargs):
-        return super().kill_active_jobs( *args, **kwargs) 
+        return self.scheduler.kill_active_jobs( *args, **kwargs) 
     
     @pyro_expose
     def clear_jobs(self, include_queued: bool = False) -> List[Dict[str, Any]]:
         """Removes finished jobs (and optionally queued/pending jobs) from memory."""
-        self._update_job_statuses()
+        # self.scheduler._update_job_statuses()
     
         keys_to_remove = [
             job_id for job_id, job in self.jobs.items()
@@ -212,7 +192,7 @@ class DispatchDaemon(Scheduler,ABC):
     ##########################
     @pyro_expose
     def get_jobs(self):
-        output = []
+        output = PrettyList([])
         for job in self.jobs.values():
             output.append(job.to_dict())
         return output
@@ -243,52 +223,55 @@ class DispatchDaemon(Scheduler,ABC):
     def set_run_base_dir(self,run_base_dir):
         self.run_base_dir = run_base_dir
 
+    def _generate_job_id(self, prefix: str = "job") -> str:
+        return f"{prefix}_{uuid.uuid4().hex[:8]}"
+    
+    ##########################
+    # scheduler Methods
+    ##########################
+    @pyro_expose
+    def scheduler_status(self) -> bool:
+        return self.scheduler.status()
+    
+    @pyro_expose
+    def start_scheduler(self) -> bool:
+        return self.scheduler.start()
+    
+    @pyro_expose
+    def stop_scheduler(self, timeout: float = 5.0) -> bool:
+        return self.scheduler.stop()
+
+    @pyro_expose
+    def restart_scheduler(self) -> bool:
+        return self.scheduler.restart()
+
+    # -------------------------------------------------------------------------
+    # Configuration Setters
+    # -------------------------------------------------------------------------
+    @pyro_expose
+    def set_poll_interval(self, poll_interval: float) -> None:
+        self.scheduler.poll_interval = poll_interval
+        
+    @pyro_expose
+    def set_max_concurrent_jobs(self, max_concurrent_jobs: int) -> None:
+        self.scheduler.max_concurrent_jobs = max_concurrent_jobs
+        
+    @pyro_expose
+    def set_max_concurrent_cores(self, max_concurrent_cores: int) -> None:
+        self.scheduler.max_concurrent_cores = max_concurrent_cores
     
   
+    def shutdown(self):
+        self.scheduler.cleanup()
     
 @pyro_expose
 @pyro_behavior(instance_mode="single")
 class WarpXDispatchDaemon(DispatchDaemon):
-    def __init__(self,run_base_dir = None, max_concurrent_jobs: int = 2, poll_interval: float = 1.0):
-        super().__init__(run_base_dir,max_concurrent_jobs, poll_interval)
+    def __init__(self, run_base_dir = None, max_concurrent_jobs: int = 2, poll_interval: float = 1.0):
+        super().__init__(WarpXEngine(), run_base_dir,max_concurrent_jobs, poll_interval)
         self.model_include_patterns = None
         self.model_ignore_patterns.extend(['Backtrace*','warpx_used_inputs','diags'])
     
-    def _start_job(self, job):
-        """RPC endpoint to launch the simulation process."""
-        
-        run_dir = str(self._spawn_run_dir(job))
-        
-        #### open log file
-        job.log_path.parent.mkdir(parents=True, exist_ok=True)
-        job._log_file = open(job.log_path, "w")
-        
-        
-        #### generate run command
-        command = []
-        if job.nc>1:
-            # command.extend(['mpiexec','-x', 'JOB_CONFIG','-np','%i'%job.nc])
-            command.extend(['mpiexec','-np','%i'%job.nc])
-        command.extend(['python',job.model_path.name])
-        
-        #### run job
-        env = self._set_run_env(job)   # to pass arguments to simulation
-        job._proc = subprocess.Popen(
-            command,
-            cwd=run_dir,
-            env=env,
-            stdout=job._log_file,
-            stderr=subprocess.STDOUT,  # Redirect stderr into stdout
-            start_new_session=True     # Decouples process group for clean killing
-            )
-        job.mark_started()
-
-    def _set_run_env(self, job):
-        params = getattr(job, "parameters", getattr(job, "params", {})).copy()
-        params["_managed"] = True # flag to tell load_job_config JOB_CONFIG is neccessary
-        
-        job_config_json = json.dumps(params, default=str)
-        return {**os.environ, "JOB_CONFIG": job_config_json}
     
     
     
