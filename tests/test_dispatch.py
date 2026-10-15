@@ -7,15 +7,16 @@ except ImportError:
     pass
 
 #from pathlib import Path
-from wxutils.dispatch import WarpXDispatchDaemon
+from wxutils.dispatch import WarpXDispatcher
 from pywarpx import picmi
+from pathlib import Path
 
 constants = picmi.constants
 
 host= '127.0.0.1'
 port = 44444
-model_path = "/home/marcus/Documents/SimulationProjects/wxutils/tests/test_model/inputs_test_2d_electrostatic_macroscopic_solver_picmi.py"
-
+script_dir = Path(__file__).parent.resolve()
+model_path = script_dir / "test_model/test_model.py"
 job_parameters = [{'epsilon0':constants.ep0, 'epsilon1':constants.ep0*10},
                   {'epsilon0':constants.ep0, 'epsilon1':constants.ep0*20}]
 
@@ -29,7 +30,7 @@ if __name__ == "__main__":
     uri = "PYRO:ProxyDispatch@localhost:44444"
     # dispatch =  Pyro5.api.Proxy(uri=uri)
     
-    dispatch = WarpXDispatchDaemon()
+    dispatch = WarpXDispatcher()
     dispatch.set_poll_interval(1.0)
     for job_parameter in job_parameters:
         job_info_local = dispatch.create_job(model_path, job_params=job_parameter,nc=2)

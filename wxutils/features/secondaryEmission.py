@@ -77,7 +77,7 @@ class SecondaryEmission(CallbackBase):
                                         warpx_save_particles_at_eb=False,
                                         warpx_add_real_attributes = extra_attrs,
                                         )
-        layout = picmi.PseudoRandomLayout(n_macroparticles_per_cell=[1,1], grid=self.sim.solver.grid)
+        layout = picmi.PseudoRandomLayout(n_macroparticles_per_cell=1, grid=self.sim.solver.grid)
         sim.add_species(self.surface_species0,layout=layout)
         sim.add_species(self.surface_species1,layout=layout)
         self.deposit = Deposit(sim=self.sim,

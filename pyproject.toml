@@ -33,7 +33,7 @@ dependencies = [
 
 warpx = ["warpx"]  # this is required but the user may install from source.
 pyro = ["Pyro5@git+https://github.com/pearlmam/Pyro5.git"]
-
+dmanage = ["dmanage@git+https://github.com/pearlmam/dmanage.git"]
 
 geoviz = [  
   "trimesh",           
