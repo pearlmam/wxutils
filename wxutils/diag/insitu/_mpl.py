@@ -12,12 +12,13 @@ import wxutils.mpitools as mpit
 
 colors = 'brgk'
 
+__all__ = ["InSituMPL"]
+
 class InSituMPL():
-    def __init__(self,particles,backend='QtAgg',pausePeriod=None):
+    def __init__(self,particles,backend='QtAgg'):
         self.backend=backend
-        self.pausePeriod = pausePeriod
         if not isinstance(particles,(str,list,tuple)):
-            raise TypeError("paritcles must be of type string, list, or tuple")
+            raise TypeError("particles must be of type string, list, or tuple")
         elif not isinstance(particles,(list,tuple)):
             self.particles = [particles]
         else:
@@ -72,3 +73,7 @@ class InSituMPL():
     def close(self):
         if self.fig:
             self.fig.close()
+            
+            
+
+
