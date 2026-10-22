@@ -22,21 +22,25 @@ class InSituMPL():
         self.figs = {}
         self.axs = {}
         self.rate = rate
-        mpl.use(self.backend)
-        plt.ion()
+        if mpit.get_rank() == 0:
+            mpl.use(self.backend)
+            plt.ion()
     
     def pre_initialize(self,sim):
-        if mpit.enabled():
-            if mpit.get_rank() == 0:
-                # raise Warning("matplotlib plotting is disabled with mpi runs")
-                print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
-            return
+        self.mpii = mpit.Info()
+        # if mpit.enabled():
+        #     if mpit.get_rank() == 0:
+        #         # raise Warning("matplotlib plotting is disabled with mpi runs")
+        #         print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
+        #     return
         self.sim = sim
         self.xp,_ = load_cupy()
         
     
     def add_fig(self,key,fig=1,figsize=(12,6)):
-        if type(fig) is int: 
+        if mpit.get_rank() != 0:
+            return
+        elif type(fig) is int: 
             fig = plt.figure(fig, figsize=figsize)
             ax = fig.subplots(nrows=1,ncols=1)
         else:
@@ -60,43 +64,73 @@ class InSituMPL():
         setattr(self,func.__name__,bound_method)
         callbacks.installcallback(cb_loc, getattr(self,func.__name__))
     
-    
     def plot_particles(self,key):
         if self.sim.extension.warpx.getistep(0)% self.rate != 0:
             return 
-        fig = self.figs[key]
-        ax = self.axs[key]
-        # print(ax)
+        
         xymin = self.xp.array(self.sim.solver.grid.lower_bound)
         xymax = self.xp.array(self.sim.solver.grid.upper_bound)
         area = self.xp.prod(xymax - xymin)
-        ax.clear() 
-        ax.set(xlim=(xymin[0],xymax[0]),ylim=(xymin[1],xymax[1]))
+        
+        if self.mpii.rank == 0:
+            fig = self.figs[key]
+            ax = self.axs[key]
+            ax.clear() 
+            ax.set(xlim=(xymin[0],xymax[0]),ylim=(xymin[1],xymax[1]))
+        
         info = ''
         for i,particle in enumerate(self.particles):
             p_pc = self.sim.particles.get(particle)
             mpsum = 0.
-            psum = 0.0
+            
+            x_local_list = []
+            y_local_list = []
             for pti in p_pc.iterator(level=0):
-                x = to_cpu(pti['x'])
-                y = to_cpu(pti['z'])
-                ax.scatter(x, y,c=colors[(i)%len(colors)],s=1)
+                x_local_list.append(to_cpu(pti["x"]))
+                y_local_list.append(to_cpu(pti["z"]))
     
-            charge = p_pc.sum_particle_charge(0)
-            mpsum = p_pc.total_number_of_particles()
-            density = mpsum/area
-            info += 'N%s = %i, RHO%s = %0.2e, '%(particle,mpsum,particle,density) 
-        ax.set(title=info)
-        #plot_impl(grid,implicit_expr,fig=1,clear=False)
-        # plot_impl(grid,expression,fig=1,clear=False)
-        fig.canvas.draw_idle()
-        fig.canvas.flush_events()
-        # plt.gca().set_aspect('equal')
+            if len(x_local_list) > 0:
+                x_local = self.xp.concatenate(x_local_list)
+                y_local = self.xp.concatenate(y_local_list)
+            else:
+                x_local = self.xp.empty(0, dtype=self.xp.float64)
+                y_local = self.xp.empty(0, dtype=self.xp.float64)
+            
+            x_gathered = self.mpii.comm.gather(x_local, root=0)
+            y_gathered = self.mpii.comm.gather(y_local, root=0)    
+            
+            if self.mpii.rank == 0:
+                # Filter out empty arrays before concatenating
+                x_non_empty = [arr for arr in x_gathered if len(arr) > 0]
+                y_non_empty = [arr for arr in y_gathered if len(arr) > 0]
+    
+                if len(x_non_empty) > 0:
+                    x_global = self.xp.concatenate(x_non_empty)
+                    y_global = self.xp.concatenate(y_non_empty)
+                else:
+                    x_global = self.xp.empty(0, dtype=self.xp.float64)
+                    y_global = self.xp.empty(0, dtype=self.xp.float64)
+            
+            
+                ax.scatter(x_global, y_global,c=colors[(i)%len(colors)],s=1)
+    
+                mpsum = len(x_global)
+                density = mpsum / area if area > 0 else 0.0
+                info += f"N{particle} = {mpsum}, RHO{particle} = {density:0.2e}, "
+                
+        if self.mpii.rank == 0:     
+            ax.set(title=info)
+            #plot_impl(grid,implicit_expr,fig=1,clear=False)
+            # plot_impl(grid,expression,fig=1,clear=False)
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+            # plt.gca().set_aspect('equal')
         
     def close(self):
-        for fig in self.figs.values:
-            if self.fig:
-                self.fig.close()
+        if mpit.get_rank() == 0:
+            for fig in self.figs.values:
+                if self.fig:
+                    self.fig.close()
             
             
 
