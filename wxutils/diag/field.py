@@ -3,6 +3,7 @@ from .diag import DiagnosticBase
 # import wxutils.mpitools as mpit
 from wxutils.utils import to_cpu
 import numpy as np
+
 class Field(DiagnosticBase):
     def __init__(self, name, io,save_period,**kw):
         super().__init__(name, io=io,save_period=save_period,**kw)
@@ -25,8 +26,6 @@ class Field(DiagnosticBase):
             self.data = {"scalar":self.sim.fields.get(self.name,level=self.lev)}
         
     def save(self):
-        
-        
         if self.io.parallel_write:
             ###### parallel write implementation
             raise NotImplementedError("Option 'parallel_write' is not implemented yet. It writes corrupted data.")

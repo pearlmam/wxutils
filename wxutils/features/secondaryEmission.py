@@ -90,6 +90,7 @@ class SecondaryEmission(CallbackBase):
                                split_spread=self.dep_split_spread,
                                split_weights=self.dep_split_weights,
                                debug = self.dep_debug,
+                               manual_deposit=True,
                                )
     def post_initialize(self):
         self.xp, _ = load_cupy()

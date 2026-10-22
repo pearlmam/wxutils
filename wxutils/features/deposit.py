@@ -7,6 +7,10 @@ import wxutils.mpitools as mpit
 from wxutils.features.helpers import get_valid_region
 
 class Deposit(CallbackBase):
+    """
+    deposit = Deposit(rho="rho_electrons",method="warpx",species=electrons)
+    """
+    
     def __init__(self,**kw):
         
         self.rhoName = kw.pop("rho","rho_fp")
@@ -17,6 +21,7 @@ class Deposit(CallbackBase):
         self.split_spread = kw.pop("split_spread",None)
         self.split_weights = kw.pop("split_weights",[0.25,0.5,0.25])
         self.debug = kw.pop("debug",None)
+        self.manual_deposit = kw.pop("manual_deposit",False)  # must set up deposit callback manually
         if not isinstance(self.speciesList,(list,tuple,picmi.Species)):
             raise TypeError("species must be a picmi.Species or list-like of picmi.Species")
         elif isinstance(self.speciesList,(picmi.Species)):
@@ -38,6 +43,8 @@ class Deposit(CallbackBase):
         
     def pre_initialize(self,sim):
         callbacks.installcallback("beforeInitEsolve", self.post_initialize)
+        if not self.manual_deposit:
+            callbacks.installcallback("afterdeposition", self.deposit_charge)
         self.sim = sim
         if (self.speciesList is None):
             if (self.sim.species is not None):
@@ -47,14 +54,16 @@ class Deposit(CallbackBase):
         
     def post_initialize(self):
         self.xp,_ = load_cupy()
-        self.rho = self.sim.fields.get(self.rhoName,level=self.lev)
+        self.rho = self.sim.fields.get("rho_fp",level=self.lev)  # reference field to create field if needed
+        self.rho = self._create_scaler_field(self.rhoName,self.rho)  # grabs or creates field
         self._rho = self._initialize_rho_temp()
         self.geom = self.sim.extension.warpx.Geom(self.lev)
         self.species_pc = [self.sim.particles.get(species.name) for species in self.speciesList]
         # self.species_pcw = [particle_containers.ParticleContainerWrapper(species.name) for species in self.speciesList]
         self.pcVars = ["x","z","w"]
         self._bind_method()
-        # callbacks.installcallback("afterdeposition", self.deposit_charge)
+        
+        callbacks.installcallback("afterdeposition", self.deposit_charge)
         
     
     def _initialize_rho_temp(self):
