@@ -37,6 +37,7 @@ class InSituMPL():
         #     return
         self.sim = sim
         self.xp,_ = load_cupy()
+        self.time = []
         
     def add_fig(self,key,fig=1,figsize=(12,6),custom_home=False):
         if mpit.get_rank() != 0:
@@ -139,6 +140,16 @@ class InSituMPL():
             fig.canvas.draw_idle()
             fig.canvas.flush_events()
             # plt.gca().set_aspect('equal')
+    
+    def update_time_vector(self,factor=1.):
+        time = self.sim.extension.warpx.gett_new(0)*factor
+        if len(self.time) == 0:
+            self.time.append(time)
+        elif time != self.time[-1]:
+            self.time.append(time)
+        else:
+            pass
+        return self.time
     
     def concat(self, list_of_arrays,*args,**kwargs):
         if len(list_of_arrays) == 0:
