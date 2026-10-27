@@ -6,6 +6,14 @@ availiable_species = {
     'electron': {'mass': constants.m_e, "charge": -constants.q_e}
 }
 
+availiable_mass = {
+    'm_e': constants.m_e,
+}
+availiable_charge = {
+    'q_e': constants.q_e,
+    '-q_e': -constants.q_e,
+}
+
 boundaryEnable = {'x_lo': 'save_particles_at_xlo',
                   'x_hi': 'save_particles_at_xhi',
                   'y_lo': 'save_particles_at_ylo',
@@ -22,9 +30,15 @@ def set_species_params(species, boundary=None):
     elif (species.particle_type in availiable_species) and (species.mass is None) or (species.charge is None):
         species.mass = availiable_species[species.particle_type]["mass"]
         species.charge = availiable_species[species.particle_type]["charge"]
-        species.particle_type = None  # this still generates warning...
+        species.particle_type = None  # this still generates warning... 
     else:
-        raise Exception("Particle type '%s' not supported for set_species_params(), define mass and charge manually.")
+        if (species.mass in availiable_mass):
+            species.mass = availiable_mass[species.mass]
+        if (species.charge in availiable_charge):
+            species.charge = availiable_charge[species.charge]
+        
+    if not isinstance(species.mass,(float)) and not isinstance(species.charge,(float)):
+        raise Exception(f"Particle type {species.particle_type} not supported for set_species_params() and charge and/or mass is not defined. Define mass and charge manually.")
 
     if not isinstance(boundary, (str, list, tuple, type(None))):
         raise TypeError("boundary must be of type string, list, tuple, or None")
