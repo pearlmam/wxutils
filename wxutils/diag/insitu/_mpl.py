@@ -8,54 +8,136 @@ from matplotlib.backend_bases import NavigationToolbar2
 from pywarpx.LoadThirdParty import load_cupy
 from pywarpx import particle_containers, picmi,callbacks
 
+from wxutils.core.base import CallbackBase
 from wxutils.utils import to_cpu
 import wxutils.mpitools as mpit
 from wxutils.features.helpers import set_species_params
 
-from types import MethodType
+
+from ._helpers import update_home_decorator, move_figure
 
 colors = 'brgk'
 
-__all__ = ["InSituMPL"]
+__all__ = ["InSituMPL","InSituParticles","InSituFigure"]
 
-class InSituMPL():
-    def __init__(self,backend='QtAgg',rate=1):
+class InSituMPL(CallbackBase):
+    def __init__(self,backend='QtAgg'):
         self.backend=backend
-        self.figs = {}
-        self.axs = {}
-        self.rate = rate
+        
+        self.figs = []
         if mpit.get_rank() == 0:
             mpl.use(self.backend)
             plt.ion()
     
     def pre_initialize(self,sim):
         self.mpii = mpit.Info()
-        # if mpit.enabled():
-        #     if mpit.get_rank() == 0:
-        #         # raise Warning("matplotlib plotting is disabled with mpi runs")
-        #         print("Warning: matplotlib plotting is disabled with mpi runs",flush=True )
-        #     return
         self.sim = sim
         self.xp,_ = load_cupy()
         self.time = []
+        for fig in self.figs:
+            fig.pre_initialize(sim)
         
-    def add_fig(self,key,fig=1,figsize=(12,6),custom_home=False):
-        if mpit.get_rank() != 0:
-            return
-        elif type(fig) is int: 
-            fig = plt.figure(fig, figsize=figsize)
-            ax = fig.subplots(nrows=1,ncols=1)
+    def add_fig(self,fig):
+        self.figs.append(fig)
+    
+    def update(self):
+        for fig in self.figs:
+            fig.update_plot()
+            
+    def update_time_vector(self,factor=1.):
+        time = self.sim.extension.warpx.gett_new(0)*factor
+        if len(self.time) == 0:
+            self.time.append(time)
+        elif time != self.time[-1]:
+            self.time.append(time)
         else:
-            ax = fig.axes
-            ax = ax[0]
-        self.figs[key], self.axs[key] = fig, ax
-        if custom_home:
-            toolbar = fig.canvas.toolbar
+            pass
+        return self.time
+    
+    def save(self):
+        for fig in self.figs:
+            fig.save()
+    
+    def close(self):
+        if mpit.get_rank() == 0:
+            for fig in self.figs.values:
+                if self.fig:
+                    self.fig.close()
+
+
+
+class InSituFigure(CallbackBase):
+    """future interactive figure"""
+    def __init__(self,**kw):
+        self.rate = kw.pop("rate",1)
+        self.callback_loc = kw.pop("callback_loc", "afterstep")
+        self.custom_home = kw.pop("custom_home",None)
+        self.io = kw.pop("io",None)
+        self.name = kw.pop("name",None)
+        self.kwfig = kw
+        
+    def pre_initialize(self,sim):
+        self.sim = sim
+        self.xp, _ = load_cupy()
+        self.mpii = mpit.Info()
+        self.figure(**self.kwfig)
+        callbacks.installcallback("beforeInitEsolve", self.post_initialize)
+        callbacks.installcallback(self.callback_loc, self.update_figure)
+        if self.io:
+            # This doesnt work, need steps end callback loc
+            callbacks.installcallback("onbreaksignal",self.save)
+        
+    def post_initialize(self,):
+        if self.mpii.rank == 0:
+            self.ax.clear() 
+
+    def figure(self,fig=None,**kw):
+        if isinstance(fig, (mpl.figure.Figure)):
+            self.fig = fig
+        else:
+            nrows = kw.pop("nrows",1)
+            ncols = kw.pop("ncols",1)
+            position = kw.pop("position",None)
+            self.fig = plt.figure(**kw)
+            self.ax = self.fig.subplots(nrows=nrows,ncols=ncols)
+            if position:
+                move_figure(self.fig, position[0], position[1])
+        if self.custom_home:
+            toolbar = self.fig.canvas.toolbar
             if toolbar is not None:
                 toolbar._update_view = update_home_decorator(toolbar._update_view)
 
-        # self.figs[key] = plt.figure(fig,figsize=figsize)
-        # self.axs[key] = self.figs[key].subplots(nrows=1,ncols=1)
+    def update_data(self):
+        if self.sim.extension.warpx.getistep(0)% self.rate != 0:
+            return
+    
+    def update_figure(self):
+        if self.sim.extension.warpx.getistep(0)% self.rate != 0:
+            return
+    
+    def update_time_vector(self,factor=1.):
+        time = self.sim.extension.warpx.gett_new(0)*factor
+        if len(self.time) == 0:
+            self.time.append(time)
+        elif time != self.time[-1]:
+            self.time.append(time)
+        else:
+            pass
+        return self.time
+    
+    def save(self):
+        if self.io:
+            self.io.save(self.name,self.data)
+    
+    def close(self):
+        self.fig.close()
+
+    
+class InSituParticles(InSituFigure):
+    def __init__(self,particles,**kw):
+        super().__init__(**kw)
+        self.add_particles(particles)
+        self.name="particles"
     
     def add_particles(self,particles):
         if not isinstance(particles,(list,tuple)):
@@ -66,34 +148,21 @@ class InSituMPL():
         self.particles = {}
         for particle in particles:
             self.particles[particle.name] = set_species_params(particle)
-        callbacks.installcallback('particleinjection', lambda: self.plot_particles('particles'))
         
-    def add_plot(self,func,cb_loc='particleinjection'):
-        bound_method = MethodType(func, self)
-        setattr(self,func.__name__,bound_method)
-        callbacks.installcallback(cb_loc, getattr(self,func.__name__))
-    
-    def plot_particles(self,key):
-        if self.sim.extension.warpx.getistep(0)% self.rate != 0:
-            return 
-        
-        xymin = self.xp.array(self.sim.solver.grid.lower_bound)
-        xymax = self.xp.array(self.sim.solver.grid.upper_bound)
-        area = self.xp.prod(xymax - xymin)
-        
+    def post_initialize(self,):
         if self.mpii.rank == 0:
-            fig = self.figs[key]
-            ax = self.axs[key]
-            
-            if self.sim.extension.warpx.getistep(0) <= 1:
-                ax.clear() 
-                ax.set(xlim=(xymin[0],xymax[0]),ylim=(xymin[1],xymax[1]))
+            xymin = self.xp.array(self.sim.solver.grid.lower_bound)
+            xymax = self.xp.array(self.sim.solver.grid.upper_bound)
+            self.ax.clear() 
+            self.ax.set(xlim=(xymin[0],xymax[0]),ylim=(xymin[1],xymax[1]))
         
+        self._initialized = True
+    
+    def update_figure(self):
         info = ''
         for i,particle in enumerate(self.particles.keys()):
             p_pc = self.sim.particles.get(particle)
             mpsum = 0.
-            
             x_local_list = []
             y_local_list = []
             for pti in p_pc.iterator(level=0):
@@ -123,10 +192,11 @@ class InSituMPL():
                     y_global = self.xp.empty(0, dtype=self.xp.float64)
             
                 if self.sim.extension.warpx.getistep(0) <= 1:
-                    ax.scatter(x_global, y_global,c=colors[(i)%len(colors)],s=1)
+                    self.ax.scatter(x_global, y_global,c=colors[(i)%len(colors)],s=1)
                 else:
-                    scat = ax.collections[i]
+                    scat = self.ax.collections[i]
                     scat.set_offsets(self.xp.column_stack((x_global, y_global)))  # or np.c_[new_x, new_y]
+                    
                 mpsum = len(x_global)
                 # density = mpsum / area if area > 0 else 0.0
                 info += f"N{particle} = {mpsum},"
@@ -134,79 +204,14 @@ class InSituMPL():
         if self.mpii.rank == 0:
             t = self.sim.extension.warpx.gett_new(0)*1e9
             info += f" time = {t:.2f} ns"
-            ax.set(title=info)
+            self.ax.set(title=info)
             #plot_impl(grid,implicit_expr,fig=1,clear=False)
             # plot_impl(grid,expression,fig=1,clear=False)
-            fig.canvas.draw_idle()
-            fig.canvas.flush_events()
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
             # plt.gca().set_aspect('equal')
-    
-    def update_time_vector(self,factor=1.):
-        time = self.sim.extension.warpx.gett_new(0)*factor
-        if len(self.time) == 0:
-            self.time.append(time)
-        elif time != self.time[-1]:
-            self.time.append(time)
-        else:
-            pass
-        return self.time
-    
-    def concat(self, list_of_arrays,*args,**kwargs):
-        if len(list_of_arrays) == 0:
-            return self.xp.empty(0)
-        else:
-            return self.xp.concatenate(list_of_arrays,*args,**kwargs)
-    
-    def close(self):
-        if mpit.get_rank() == 0:
-            for fig in self.figs.values:
-                if self.fig:
-                    self.fig.close()
-            
-            
-# def update_home_decorator(f):
-#     def newf(*args, **kwargs):
-#         ret = f(*args, **kwargs)
-#         print("something happened")        
-#         return ret
-#     return newf
 
 
-def update_home_decorator(f):
-    def newf(*args, **kwargs):
-        ret = f(*args, **kwargs)
-        
-        toolbar = f.__self__
-        fig = toolbar.canvas.figure
-        
-        is_at_home = False
-        if hasattr(toolbar, '_nav_stack'):
-            elements = toolbar._nav_stack._elements
-            if not elements or toolbar._nav_stack() == elements[0]:
-                is_at_home = True
-                
-        if is_at_home:
-            for ax in fig.axes:
-                # Reset old step data limits
-                ax.dataLim.ignore(True)
-                
-                # 1. Recalculate 1D line plot limits
-                ax.relim()
-                
-                # 2. Recalculate scatter plot / collection limits
-                for c in ax.collections:
-                    ax.update_datalim(c.get_datalim(ax.transData))
-                
-                # 3. Recalculate 2D image (imshow) limits
-                for im in ax.images:
-                    extent = im.get_extent()
-                    ax.set_xlim(extent[0], extent[1])
-                    ax.set_ylim(extent[2], extent[3])
-                
-                ax.autoscale(enable=True, axis='both')
-                ax.autoscale_view()
-            
-            fig.canvas.draw_idle()
-            
-        return ret
-    return newf
+
+
+
