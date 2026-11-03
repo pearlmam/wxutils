@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+import numpy as np
 from pywarpx import picmi,geometry,amr
 constants = picmi.constants
 
@@ -88,3 +88,43 @@ def to_cell_centered(data, comp=None, domain_cells=None):
         arr = 0.5 * (arr[tuple(slc_a)] + arr[tuple(slc_b)])
     return arr
 
+
+
+def get_rank_domain(self):
+    """Returns (rank_min, rank_max) physical bounds in meters for this rank's domain.
+
+    Works regardless of particle presence.
+    """
+    grid = self.sim.solver.grid
+    prob_lo = np.array(grid.lower_bound)
+    prob_hi = np.array(grid.upper_bound)
+    n_cells = np.array(grid.number_of_cells)
+    dx = (prob_hi - prob_lo) / n_cells
+
+    # 1. Fetch field MultiFab (exists on all allocated grid patches)
+    Ex = self.sim.fields.get("Efield_fp", dir="x", level=0)
+
+    tile_mins = []
+    tile_maxs = []
+
+    # 2. Iterate over local grid blocks (boxes) assigned to this MPI rank
+    for mfi in Ex:
+        bx = mfi.tilebox()  # Global cell index box for this tile
+
+        # Convert cell indices (small_end, big_end) into physical spatial bounds
+        tile_lo = prob_lo + np.array(bx.small_end) * dx
+        tile_hi = (
+            prob_lo + (np.array(bx.big_end) + 1) * dx
+        )  # +1 for upper cell edge
+
+        tile_mins.append(tile_lo)
+        tile_maxs.append(tile_hi)
+
+    if not tile_mins:
+        return None, None
+
+    # 3. Overall bounding box for all tiles owned by this rank
+    rank_min = np.min(tile_mins, axis=0)
+    rank_max = np.max(tile_maxs, axis=0)
+
+    return rank_min, rank_max
