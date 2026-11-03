@@ -34,7 +34,7 @@ class CurrentAbs(Diagnostic1D):
         
     def post_initialize(self):
         super().post_initialize()
-        self.data = self.xp.zeros((2, self.data_buffer_length), dtype=self.xp.float64)
+        # self.data = self.xp.zeros((2, self.data_buffer_length), dtype=self.xp.float64)
         # self.species_pc = [self.sim.particles.get(species.name) for species in self.speciesList]
         self.buffer = particle_containers.ParticleBoundaryBufferWrapper()
 

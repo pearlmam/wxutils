@@ -67,6 +67,10 @@ class Diagnostic1D(DiagnosticBase):
         super().__init__(name,io=io,save_period=save_period,**kw)
         self.log_step = 0
     
+    def post_initialize(self):
+        super().post_initialize()
+        self.data = self.xp.zeros((2, self.data_buffer_length), dtype=self.xp.float64)
+    
     def log(self):
         """Purely local logging—zero MPI latency or network communication per step."""
         x0,x1 = self.get()
