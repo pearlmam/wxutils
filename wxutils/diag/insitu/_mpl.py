@@ -30,9 +30,8 @@ class InSituMPL(CallbackBase):
             plt.ion()
     
     def pre_initialize(self,sim):
+        super().pre_initialize(sim)
         self.mpii = mpit.Info()
-        self.sim = sim
-        self.xp,_ = load_cupy()
         self.time = []
         for fig in self.figs:
             fig.pre_initialize(sim)
@@ -78,7 +77,6 @@ class InSituFigure(CallbackBase):
         
     def pre_initialize(self,sim):
         self.sim = sim
-        self.xp, _ = load_cupy()
         self.mpii = mpit.Info()
         self.figure(**self.kwfig)
         callbacks.installcallback("beforeInitEsolve", self.post_initialize)
@@ -88,6 +86,7 @@ class InSituFigure(CallbackBase):
             callbacks.installcallback("onbreaksignal",self.save)
         
     def post_initialize(self,):
+        self.xp, _ = load_cupy()
         if self.mpii.rank == 0:
             self.ax.clear() 
 
@@ -101,7 +100,7 @@ class InSituFigure(CallbackBase):
             self.fig = plt.figure(**kw)
             self.ax = self.fig.subplots(nrows=nrows,ncols=ncols)
             if position:
-                move_figure(self.fig, position[0], position[1])
+                self.move_figure(position[0], position[1])
         if self.custom_home:
             toolbar = self.fig.canvas.toolbar
             if toolbar is not None:
@@ -114,6 +113,9 @@ class InSituFigure(CallbackBase):
     def update_figure(self):
         if self.sim.extension.warpx.getistep(0)% self.rate != 0:
             return
+    
+    def move_figure(self,pos):
+        move_figure(self.fig, pos)
     
     def update_time_vector(self,factor=1.):
         time = self.sim.extension.warpx.gett_new(0)*factor
@@ -150,6 +152,7 @@ class InSituParticles(InSituFigure):
             self.particles[particle.name] = set_species_params(particle)
         
     def post_initialize(self,):
+        super().post_initialize()
         if self.mpii.rank == 0:
             xymin = self.xp.array(self.sim.solver.grid.lower_bound)
             xymax = self.xp.array(self.sim.solver.grid.upper_bound)
@@ -204,7 +207,7 @@ class InSituParticles(InSituFigure):
         if self.mpii.rank == 0:
             t = self.sim.extension.warpx.gett_new(0)*1e9
             info += f" time = {t:.2f} ns"
-            self.ax.set(title=info)
+            #self.ax.set(title=info)
             #plot_impl(grid,implicit_expr,fig=1,clear=False)
             # plot_impl(grid,expression,fig=1,clear=False)
             self.fig.canvas.draw_idle()
