@@ -47,6 +47,7 @@ class VizSchema1D(IO):
         
     def initialize_file(self):
         if self.mpii.is_root and not self._initialized:
+            os.makedirs(self.path.parent,exist_ok=True)
             with h5py.File(str(self.path), "w") as h5f:
                 mesh_group = h5f.create_group("runInfo")
                 mesh_group.attrs["software"] = np.bytes_(self.software)
