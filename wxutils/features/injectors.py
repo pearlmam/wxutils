@@ -101,7 +101,7 @@ class RealtimeFluxDistribution():
         self.thickness = self.calc_emission_extents(self.directed_velocity)
         
         
-    def inject(self,particle,flux=None,velocity=None):
+    def inject(self,particle,flux=None,velocity=None,source=None):
         if flux is None:
             flux = self.flux
         if velocity is None:
@@ -110,16 +110,19 @@ class RealtimeFluxDistribution():
         
         #### calculate particle positions.
         if (self.flux>0.0):
-            N = self.calc_number_emission_particles(velocity)
+            self.N = self.calc_number_emission_particles(velocity)
             extents = self.calc_emission_extents(velocity)
             pos = [None]*3
             vel = [None]*3
             for dim in range(self.dims):
-                pos[dim] = np.random.uniform(low=extents[dim][0],high=extents[dim][1], size=N)
-                vel[dim] = velocity[dim] + np.random.normal(0, self.rms_velocity[0], size=N)
-            w = self.calc_weight(flux,N)
+                pos[dim] = np.random.uniform(low=extents[dim][0],high=extents[dim][1], size=self.N)
+                vel[dim] = velocity[dim] + np.random.normal(0, self.rms_velocity[0], size=self.N)
+            w = self.calc_weight(flux,self.N)
             pc = self.sim.particles.get(particle)   # particle container
-            pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w)
+            if source:
+                pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,source=source)
+            else:
+                pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w)
         
     def calc_number_emission_particles(self,velocity):
         N = np.zeros(3)
