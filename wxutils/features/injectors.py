@@ -2,8 +2,9 @@
 
 
 from pywarpx.callbacks import installcallback
-from pywarpx import picmi
+from pywarpx import picmi,geometry
 import numpy as np
+import wxutils.mpitools as mpit
 
 def dimension_string_to_num(dimString,dim=3):
     if dim in [0,1]:
@@ -97,7 +98,7 @@ class RealtimeFluxDistribution():
         self.particles_per_cell = self.calc_particles_per_cell(self.number_per_cell_each_dim)
         self.dxyz = (np.array(self.upper_bound)-np.array(self.lower_bound))/np.array(self.cells)
         
-        self.N = self.calc_number_emission_particles(self.directed_velocity)
+        self.Ntot = self.calc_number_emission_particles(self.directed_velocity)
         self.thickness = self.calc_emission_extents(self.directed_velocity)
         
         
@@ -110,20 +111,20 @@ class RealtimeFluxDistribution():
         
         #### calculate particle positions.
         if (self.flux>0.0):
-            self.N = self.calc_number_emission_particles(velocity)
+            self.Ntot = self.calc_number_emission_particles(velocity)
             extents = self.calc_emission_extents(velocity)
             pos = [None]*3
             vel = [None]*3
             for dim in range(self.dims):
-                pos[dim] = np.random.uniform(low=extents[dim][0],high=extents[dim][1], size=self.N)
-                vel[dim] = velocity[dim] + np.random.normal(0, self.rms_velocity[0], size=self.N)
-            w = self.calc_weight(flux,self.N)
+                pos[dim] = np.random.uniform(low=extents[dim][0],high=extents[dim][1], size=self.Ntot)
+                vel[dim] = velocity[dim] + np.random.normal(0, self.rms_velocity[0], size=self.Ntot)
+            w = self.calc_weight(flux,self.Ntot)
             pc = self.sim.particles.get(particle)   # particle container
             if source:
-                pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,source=source)
+                pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,source=source,unique_particles=False)
             else:
-                pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w)
-        
+                pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,unique_particles=False)
+            
     def calc_number_emission_particles(self,velocity):
         N = np.zeros(3)
         for dim in range(self.dims):
@@ -137,9 +138,9 @@ class RealtimeFluxDistribution():
         fraction = N - n_int
         add_extra = 1 if np.random.random() < fraction else 0
         return n_int + add_extra
+    
+    import numpy as np
 
-    
-    
     def calc_emission_extents(self,velocity):
         extents = [[0.0,1.0]]*3
         for dim in range(self.dims):
