@@ -5,6 +5,8 @@ from pywarpx.callbacks import installcallback
 from pywarpx import picmi,geometry
 import numpy as np
 import wxutils.mpitools as mpit
+from wxutils.core import CallbackBase
+from pywarpx import particle_containers, picmi,callbacks
 
 def dimension_string_to_num(dimString,dim=3):
     if dim in [0,1]:
@@ -19,8 +21,8 @@ def dimension_string_to_num(dimString,dim=3):
             return 1
         elif dimString == 'z':
             return 2
-
-class RealtimeFluxDistribution():
+        
+class RealtimeFluxDistribution(CallbackBase):
     """
     Describes a flux of particles emitted from a plane
 
@@ -64,7 +66,7 @@ class RealtimeFluxDistribution():
         the momentum distribution is simply Gaussian.
     """
 
-    def __init__(self, sim,flux, flux_normal_axis,
+    def __init__(self, particle,flux, flux_normal_axis,
                  surface_flux_position, flux_direction,
                  lower_bound = [None,None,None],
                  upper_bound = [None,None,None],
@@ -74,9 +76,10 @@ class RealtimeFluxDistribution():
                  flux_tmax = None,
                  gaussian_flux_momentum_distribution = None,
                  **kw):
-        self.sim = sim
+        
+        self.particle = particle
         self.flux = flux
-        self.flux_normal_axis = dimension_string_to_num(flux_normal_axis,sim.solver.grid.number_of_dimensions)
+        self.flux_normal_axis = flux_normal_axis
         self.surface_flux_position = surface_flux_position
         self.flux_direction = flux_direction
         self.lower_bound = lower_bound
@@ -86,13 +89,23 @@ class RealtimeFluxDistribution():
         self.flux_tmin = flux_tmin
         self.flux_tmax = flux_tmax
         self.gaussian_flux_momentum_distribution = gaussian_flux_momentum_distribution
-        
-        self.dt = sim.time_step_size
         self.number_per_cell_each_dim = np.array([5,5])
-        self.dims = sim.solver.grid.number_of_dimensions
-        self.cells = sim.solver.grid.number_of_cells
-        self.lower_bound = sim.solver.grid.lower_bound
-        self.upper_bound = sim.solver.grid.upper_bound
+        self.source = int(kw.pop("source", 0))
+        
+        
+        
+    def pre_initialize(self,sim):
+        super().pre_initialize(sim)
+        callbacks.installcallback('particleinjection', self.inject)
+        
+    def post_initialize(self,):
+        super().post_initialize()
+        self.flux_normal_axis = dimension_string_to_num(self.flux_normal_axis,self.sim.solver.grid.number_of_dimensions)
+        self.dt = self.sim.time_step_size
+        self.dims = self.sim.solver.grid.number_of_dimensions
+        self.cells = self.sim.solver.grid.number_of_cells
+        self.lower_bound = self.sim.solver.grid.lower_bound
+        self.upper_bound = self.sim.solver.grid.upper_bound
         self.emission_area = self.calc_emission_area(self.lower_bound,self.upper_bound)
         self.cells_on_plane = self.calc_cells_on_plane(self.cells)
         self.particles_per_cell = self.calc_particles_per_cell(self.number_per_cell_each_dim)
@@ -100,13 +113,12 @@ class RealtimeFluxDistribution():
         
         self.Ntot = self.calc_number_emission_particles(self.directed_velocity)
         self.thickness = self.calc_emission_extents(self.directed_velocity)
-        
-        
-    def inject(self,particle,flux=None,velocity=None,source=None):
-        if flux is None:
-            flux = self.flux
-        if velocity is None:
-            velocity = self.directed_velocity
+    
+    
+    def inject(self,):
+        flux = self.flux
+        velocity = self.directed_velocity
+        source = self.source
         # more checks ??
         
         #### calculate particle positions.
@@ -119,7 +131,7 @@ class RealtimeFluxDistribution():
                 pos[dim] = np.random.uniform(low=extents[dim][0],high=extents[dim][1], size=self.Ntot)
                 vel[dim] = velocity[dim] + np.random.normal(0, self.rms_velocity[0], size=self.Ntot)
             w = self.calc_weight(flux,self.Ntot)
-            pc = self.sim.particles.get(particle)   # particle container
+            pc = self.sim.particles.get(self.particle.name)   # particle container
             if source:
                 pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,source=source,unique_particles=False)
             else:
@@ -167,5 +179,3 @@ class RealtimeFluxDistribution():
     def calc_particles_per_cell(self,number_per_cell_each_dim):
         number_per_cell_each_dim = np.delete(self.number_per_cell_each_dim,self.flux_normal_axis)
         return  np.prod(number_per_cell_each_dim)
-        
-        
