@@ -1,41 +1,27 @@
 import numpy as np
 from collections import deque
+import warnings
 
 class SimpleMovingAvg1D:
-    def __init__(self, window_size, vector_dim=None):
+    def __init__(self, window_size: int, vector_dim: int):
         self.window_size = window_size
-        self.queue = deque(maxlen=window_size)
-        # Initialize a running sum vector of zeroes
-        if vector_dim:
-            self.running_sum = np.zeros(vector_dim, dtype=np.float64)
-        else:
-            self.running_sum = None
-    
+        self.buffer = np.full((window_size, vector_dim), np.nan, dtype=np.float64)
+        self.ptr = 0
+
     def update(self, new_vector: np.ndarray) -> np.ndarray:
-        if self.running_sum is None:
-            N = len(new_vector)
-            self.running_sum = np.zeros(N, dtype=np.float64)
-        
-        if len(self.queue) == self.window_size:
-            self.running_sum -= self.queue[0]
-            
-        self.queue.append(new_vector)
-        self.running_sum += new_vector
-        
-        return self.running_sum / len(self.queue)
+        self.buffer[self.ptr] = new_vector
+        self.ptr = (self.ptr + 1) % self.window_size
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return np.nanmean(self.buffer, axis=0)
     
 
 class SimpleMovingAvg0D:
     def __init__(self, window_size: int):
-        self.window_size = window_size
         self.queue = deque(maxlen=window_size)
-        self.running_sum = 0.0
 
     def update(self, new_value: float) -> float:
-        if len(self.queue) == self.window_size:
-            self.running_sum -= self.queue[0]
-            
-        self.queue.append(new_value)
-        self.running_sum += new_value
-        
-        return self.running_sum / len(self.queue)
+        self.queue.append(float(new_value))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            return float(np.nanmean(self.queue))
