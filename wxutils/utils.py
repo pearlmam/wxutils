@@ -115,18 +115,19 @@ def sanitize(val):
     return None
 
 def save_pywarpx_inputs(filename='pywarpx_used_inputs.json'):
-    caller_globals = sys._getframe(1).f_globals
-    state = {}
-    for k, v in caller_globals.items():
-        if k.startswith("_") or callable(v):
-            continue
-        
-        clean_val = sanitize(v)
-        if clean_val is not None:
-            state[k] = clean_val
-
-    with open(filename, "w") as f:
-        json.dump(state, f, indent=4)
+    if mpit.get_rank() == 0:
+        caller_globals = sys._getframe(1).f_globals
+        state = {}
+        for k, v in caller_globals.items():
+            if k.startswith("_") or callable(v):
+                continue
+            
+            clean_val = sanitize(v)
+            if clean_val is not None:
+                state[k] = clean_val
+    
+        with open(filename, "w") as f:
+            json.dump(state, f, indent=4)
    
 def rng_normal(rng, loc=None, scale=None, size=None):
     loc = 0.0 if loc is None else loc
@@ -139,4 +140,5 @@ def rng_normal(rng, loc=None, scale=None, size=None):
 
 
 if __name__ == "__main__":
-    get_warpx_axis_labels(2)
+    pass
+    # get_warpx_axis_labels(2)
