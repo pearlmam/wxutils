@@ -89,7 +89,7 @@ class RealtimeFluxDistribution(CallbackBase):
         self.flux_tmin = flux_tmin
         self.flux_tmax = flux_tmax
         self.gaussian_flux_momentum_distribution = gaussian_flux_momentum_distribution
-        self.number_per_cell_each_dim = np.array([5,5])
+        
         self.source = int(kw.pop("source", 0))
         
         
@@ -97,9 +97,10 @@ class RealtimeFluxDistribution(CallbackBase):
     def pre_initialize(self,sim):
         super().pre_initialize(sim)
         callbacks.installcallback('particleinjection', self.inject)
-        
+    
     def post_initialize(self,):
         super().post_initialize()
+        
         self.flux_normal_axis = dimension_string_to_num(self.flux_normal_axis,self.sim.solver.grid.number_of_dimensions)
         self.dt = self.sim.time_step_size
         self.dims = self.sim.solver.grid.number_of_dimensions
@@ -108,7 +109,6 @@ class RealtimeFluxDistribution(CallbackBase):
         self.upper_bound = self.sim.solver.grid.upper_bound
         self.emission_area = self.calc_emission_area(self.lower_bound,self.upper_bound)
         self.cells_on_plane = self.calc_cells_on_plane(self.cells)
-        self.particles_per_cell = self.calc_particles_per_cell(self.number_per_cell_each_dim)
         self.dxyz = (np.array(self.upper_bound)-np.array(self.lower_bound))/np.array(self.cells)
         
         self.Ntot = self.calc_number_emission_particles(self.directed_velocity)
@@ -122,8 +122,9 @@ class RealtimeFluxDistribution(CallbackBase):
         # more checks ??
         
         #### calculate particle positions.
-        if (self.flux>0.0):
-            self.Ntot = self.calc_number_emission_particles(velocity)
+        self.Ntot = self.calc_number_emission_particles(velocity)
+        if (self.flux>0.0) and self.Ntot>0:
+            
             extents = self.calc_emission_extents(velocity)
             pos = [None]*3
             vel = [None]*3
@@ -132,26 +133,45 @@ class RealtimeFluxDistribution(CallbackBase):
                 vel[dim] = velocity[dim] + np.random.normal(0, self.rms_velocity[0], size=self.Ntot)
             w = self.calc_weight(flux,self.Ntot)
             pc = self.sim.particles.get(self.particle.name)   # particle container
+
             if source:
                 pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,source=source,unique_particles=False)
             else:
                 pc.add_particles(x=pos[0],y=pos[2],z=pos[1],ux=vel[0],uy=vel[2],uz=vel[1],w=w,unique_particles=False)
             
-    def calc_number_emission_particles(self,velocity):
-        N = np.zeros(3)
-        for dim in range(self.dims):
-            if dim == self.flux_normal_axis:
-                N[dim] = (self.number_per_cell_each_dim[dim]*velocity[dim]/self.dxyz[dim]*self.dt)
-            else:
-                N[dim] = (self.number_per_cell_each_dim[dim]*self.cells[dim])
-        N = N.sum()
-        # N = self.particles_per_cell*self.cells_on_plane/self.dxyz[self.flux_normal_axis]*self.dt*velocity[self.flux_normal_axis]
+    def calc_number_emission_particles(self, velocity):
+        layout = self.get_layout()
+        ax = self.flux_normal_axis
+        if isinstance(layout.n_macroparticles_per_cell, (list, tuple)):
+            N_dim = np.ones(self.dims)
+            for dim in range(self.dims):
+                if dim == ax:
+                    N_dim[dim] = layout.n_macroparticles_per_cell[dim] * (velocity[dim] / self.dxyz[dim]) * self.dt
+                else:
+                    N_dim[dim] = layout.n_macroparticles_per_cell[dim] * self.cells[dim]
+            N = np.prod(N_dim)
+        else:
+            # Number of cells on the emission boundary (1 in 1D, Ny in 2D, Ny*Nz in 3D)
+            cells_on_plane = 1
+            for dim in range(self.dims):
+                if dim != ax:
+                    cells_on_plane *= self.cells[dim]
+            N = (
+                layout.n_macroparticles_per_cell
+                * cells_on_plane
+                * (velocity[ax] / self.dxyz[ax])
+                * self.dt
+            )
+    
         n_int = int(N)
         fraction = N - n_int
         add_extra = 1 if np.random.random() < fraction else 0
         return n_int + add_extra
     
-    import numpy as np
+    def get_layout(self):
+        for sp, layout in zip(self.sim.species, self.sim.layouts):
+            if sp.name == self.particle.name:
+                return layout
 
     def calc_emission_extents(self,velocity):
         extents = [[0.0,1.0]]*3
@@ -176,6 +196,10 @@ class RealtimeFluxDistribution(CallbackBase):
         cells = np.delete(cells,self.flux_normal_axis)
         return np.prod(cells)
     
-    def calc_particles_per_cell(self,number_per_cell_each_dim):
-        number_per_cell_each_dim = np.delete(self.number_per_cell_each_dim,self.flux_normal_axis)
-        return  np.prod(number_per_cell_each_dim)
+    def calc_particles_per_cell(self,n_macroparticles_per_cell):
+        layout = self.get_layout()
+        if not isinstance(layout.n_macroparticles_per_cell, (list, tuple)):
+            return layout.n_macroparticles_per_cell
+        
+        n_macroparticles_per_cell = np.delete(layout.n_macroparticles_per_cell,self.flux_normal_axis)
+        return  np.prod(n_macroparticles_per_cell)
