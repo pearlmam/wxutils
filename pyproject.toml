@@ -32,8 +32,8 @@ dependencies = [
 [project.optional-dependencies]
 
 warpx = ["warpx"]  # this is required but the user may install from source.
-pyro = ["Pyro5@git+https://github.com/pearlmam/Pyro5.git"]
-dmanage = ["dmanage@git+https://github.com/pearlmam/dmanage.git"]
+pyro = ["pyro-with-pickle"]
+dmanage = ["dmanage"]
 
 geoviz = [  
   "trimesh",           
@@ -48,5 +48,5 @@ warpx-dispatch = "wxutils.dispatch.dispatch:main"
 
 
 [project.urls]
-Homepage = "https://github.com/pearlmam/warpx-helpers/"
-Issues = "https://github.com/pearlmam/warpx-helpers/issues"
+Homepage = "https://github.com/pearlmam/wxutils/"
+Issues = "https://github.com/pearlmam/wxutils/issues"
