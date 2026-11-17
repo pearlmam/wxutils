@@ -87,8 +87,8 @@ class InSituFigure(CallbackBase):
         
     def post_initialize(self,):
         self.xp, _ = load_cupy()
-        if self.mpii.rank == 0:
-            self.ax.clear() 
+        # if self.mpii.rank == 0:
+        #     self.ax.clear() 
 
     def figure(self,fig=None,**kw):
         if isinstance(fig, (mpl.figure.Figure)):
@@ -137,9 +137,11 @@ class InSituFigure(CallbackBase):
     
 class InSituParticles(InSituFigure):
     def __init__(self,particles,**kw):
+        self.scatter_kw = kw.pop("scatter_kw",{})
         super().__init__(**kw)
         self.add_particles(particles)
         self.name="particles"
+        
     
     def add_particles(self,particles):
         if not isinstance(particles,(list,tuple)):
@@ -186,7 +188,8 @@ class InSituParticles(InSituFigure):
                 # Filter out empty arrays before concatenating
                 x_non_empty = [arr for arr in x_gathered if len(arr) > 0]
                 y_non_empty = [arr for arr in y_gathered if len(arr) > 0]
-    
+
+                scatter_kw = self.scatter_kw.get(particle,{"s":1})
                 if len(x_non_empty) > 0:
                     x_global = self.xp.concatenate(x_non_empty)
                     y_global = self.xp.concatenate(y_non_empty)
@@ -195,7 +198,7 @@ class InSituParticles(InSituFigure):
                     y_global = self.xp.empty(0, dtype=self.xp.float64)
             
                 if self.sim.extension.warpx.getistep(0) <= 1:
-                    self.ax.scatter(x_global, y_global,c=colors[(i)%len(colors)],s=1)
+                    self.ax.scatter(x_global, y_global,c=colors[(i)%len(colors)],**scatter_kw)
                 else:
                     scat = self.ax.collections[i]
                     scat.set_offsets(self.xp.column_stack((x_global, y_global)))  # or np.c_[new_x, new_y]
