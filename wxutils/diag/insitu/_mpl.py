@@ -13,7 +13,7 @@ from wxutils.utils import to_cpu
 import wxutils.mpitools as mpit
 from wxutils.features.helpers import set_species_params
 
-
+_MISSING = object()
 from ._helpers import update_home_decorator, move_figure
 
 colors = 'brgk'
@@ -21,10 +21,11 @@ colors = 'brgk'
 __all__ = ["InSituMPL","InSituParticles","InSituFigure"]
 
 class InSituMPL(CallbackBase):
-    def __init__(self,backend='QtAgg'):
+    def __init__(self,backend='QtAgg',**kw):
         self.backend=backend
-        self.rate = 1
-        self.figs = []
+        self.rate = kw.pop("rate",1)
+        self.Figs = []
+        self.syncVars = kw.pop("syncVars",[])
         if mpit.get_rank() == 0:
             mpl.use(self.backend)
             plt.ion()
@@ -32,22 +33,60 @@ class InSituMPL(CallbackBase):
     def pre_initialize(self,sim):
         super().pre_initialize(sim)
         self.mpii = mpit.Info()
+        if self.syncVars:
+            callbacks.installcallback("afterstep", self._sync_callback)
+        self._sync_callback()
         self.time = []
-        for fig in self.figs:
+        for fig in self.Figs:
             fig.pre_initialize(sim)
-    
-    def update_rate(self,rate):
-        self.rate = rate  
-        for fig in self.figs:
-            fig.rate = rate
-            
+              
     def add_fig(self,fig):
-        self.figs.append(fig)
+        fig.parent = self
+        self.Figs.append(fig)
+    
+    def set_var(self, name, value,setFigs=False):
+        if hasattr(self, name):
+            setattr(self, name, value)
+        if setFigs:
+            for fig in self.Figs:
+                if hasattr(fig, name):
+                    setattr(fig, name, value)
     
     def update(self):
-        for fig in self.figs:
+        for fig in self.Figs:
             fig.update_plot()
-            
+    
+    def _sync_callback(self):
+        comm = getattr(self.mpii, 'comm')
+        rank = self.mpii.rank
+
+        # 1. Rank 0 flushes GUI events so pending widget clicks update attributes BEFORE broadcasting
+        if rank == 0:
+            for fig in self.Figs:
+                if getattr(fig, "fig", None) is not None:
+                    fig.fig.canvas.flush_events()
+
+            # Collect current values from Rank 0 (falls back to fig attribute if not on self)
+            payload = {}
+            for var in self.syncVars:
+                if hasattr(self, var):
+                    payload[var] = getattr(self, var)
+                elif self.Figs and hasattr(self.Figs[0], var):
+                    payload[var] = getattr(self.Figs[0], var)
+        else:
+            payload = None
+
+        # 2. Single collective broadcast for all synced variables at once
+        payload = comm.bcast(payload, root=0)
+
+        # 3. Apply broadcasted values to InSituMPL and every figure on ALL ranks
+        for var, val in payload.items():
+            if hasattr(self, var):
+                setattr(self, var, val)
+            for fig in self.Figs:
+                if hasattr(fig, var):
+                    setattr(fig, var, val)
+
     def update_time_vector(self,factor=1.):
         time = self.sim.extension.warpx.gett_new(0)*factor
         if len(self.time) == 0:
@@ -59,12 +98,12 @@ class InSituMPL(CallbackBase):
         return self.time
     
     def save(self):
-        for fig in self.figs:
+        for fig in self.Figs:
             fig.save()
     
     def close(self):
         if mpit.get_rank() == 0:
-            for fig in self.figs.values:
+            for fig in self.Figs.values:
                 if self.fig:
                     self.fig.close()
 
@@ -89,13 +128,20 @@ class InSituFigure(CallbackBase):
         if self.io:
             # This doesnt work, need steps end callback loc
             callbacks.installcallback("onbreaksignal",self.save)
-        
+    
+    
+    
     def post_initialize(self,):
         self.xp, _ = load_cupy()
         # if self.mpii.rank == 0:
         #     self.ax.clear() 
 
     def figure(self,fig=None,**kw):
+        if self.mpii.rank != 0:
+            self.fig = None
+            self.ax = None
+            return
+        
         if isinstance(fig, (mpl.figure.Figure)):
             self.fig = fig
         else:
@@ -117,9 +163,6 @@ class InSituFigure(CallbackBase):
     def update_figure(self):
         return self.sim.extension.warpx.getistep(0)% self.rate == 0 and self.mpii.rank == 0
             
-    def update_rate(self,rate):
-        self.rate = rate
-    
     def move_figure(self,pos):
         move_figure(self.fig, pos)
     
@@ -139,6 +182,19 @@ class InSituFigure(CallbackBase):
     
     def close(self):
         self.fig.close()
+    
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+
+        parent = getattr(self, "parent", None)
+        if (
+            parent is not None
+            and getattr(parent, "mpii", None) is not None
+            and parent.mpii.rank == 0
+            and name in getattr(parent, "syncVars", ())
+            and getattr(parent, name, _MISSING) != value
+        ):
+            parent.set_var(name, value)
 
     
 class InSituParticles(InSituFigure):
