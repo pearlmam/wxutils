@@ -23,7 +23,7 @@ __all__ = ["InSituMPL","InSituParticles","InSituFigure"]
 class InSituMPL(CallbackBase):
     def __init__(self,backend='QtAgg'):
         self.backend=backend
-        
+        self.rate = 1
         self.figs = []
         if mpit.get_rank() == 0:
             mpl.use(self.backend)
@@ -35,7 +35,12 @@ class InSituMPL(CallbackBase):
         self.time = []
         for fig in self.figs:
             fig.pre_initialize(sim)
-        
+    
+    def update_rate(self,rate):
+        self.rate = rate  
+        for fig in self.figs:
+            fig.rate = rate
+            
     def add_fig(self,fig):
         self.figs.append(fig)
     
