@@ -107,12 +107,13 @@ class InSituFigure(CallbackBase):
                 toolbar._update_view = update_home_decorator(toolbar._update_view)
 
     def update_data(self):
-        if self.sim.extension.warpx.getistep(0)% self.rate != 0:
-            return
+        return self.sim.extension.warpx.getistep(0)% self.rate == 0
     
     def update_figure(self):
-        if self.sim.extension.warpx.getistep(0)% self.rate != 0:
-            return
+        return self.sim.extension.warpx.getistep(0)% self.rate == 0 and self.mpii.rank == 0
+            
+    def update_rate(self,rate):
+        self.rate = rate
     
     def move_figure(self,pos):
         move_figure(self.fig, pos)
@@ -206,6 +207,7 @@ class InSituParticles(InSituFigure):
                 mpsum = len(x_global)
                 # density = mpsum / area if area > 0 else 0.0
                 info += f"N{particle} = {mpsum},"
+        return self.sim.extension.warpx.getistep(0)% self.rate == 0
                 
         if self.mpii.rank == 0:
             t = self.sim.extension.warpx.gett_new(0)*1e9
