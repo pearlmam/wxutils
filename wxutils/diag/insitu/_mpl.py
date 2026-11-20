@@ -129,8 +129,6 @@ class InSituFigure(CallbackBase):
             # This doesnt work, need steps end callback loc
             callbacks.installcallback("onbreaksignal",self.save)
     
-    
-    
     def post_initialize(self,):
         self.xp, _ = load_cupy()
         # if self.mpii.rank == 0:
@@ -220,7 +218,7 @@ class InSituParticles(InSituFigure):
         if self.mpii.rank == 0:
             xymin = self.xp.array(self.sim.solver.grid.lower_bound)
             xymax = self.xp.array(self.sim.solver.grid.upper_bound)
-            self.ax.clear() 
+            # self.ax.clear() 
             self.ax.set(xlim=(xymin[0],xymax[0]),ylim=(xymin[1],xymax[1]))
         
         self._initialized = True
